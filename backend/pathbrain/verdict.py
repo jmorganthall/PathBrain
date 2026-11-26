@@ -88,3 +88,54 @@ def current(session, pooled_best_fp: str | None) -> Verdict:
     from . import crowning
 
     return Verdict.from_resolution(crowning.resolve(session, pooled_best_fp))
+
+
+def _same_answer(row, v: Verdict) -> bool:
+    return (row.fingerprint, row.source, row.policy) == (v.fingerprint, v.source, v.policy)
+
+
+def record(session, v: Verdict, methodology_version: str | None = None):
+    """Write ``v`` to the verdict history when it is a new answer — a different crown,
+    source or policy from the newest row — and return the new row, else ``None``.
+    Caller commits. A changed ``detail`` alone (a margin, a date) is not a new answer."""
+    from sqlalchemy import select
+
+    from .models import VerdictRecord
+
+    last = session.scalars(select(VerdictRecord).order_by(VerdictRecord.id.desc()).limit(1)).first()
+    if last is not None and _same_answer(last, v):
+        return None
+    row = VerdictRecord(
+        fingerprint=v.fingerprint,
+        previous_fingerprint=last.fingerprint if last is not None else None,
+        source=v.source,
+        policy=v.policy,
+        detail=v.detail,
+        methodology_version=methodology_version,
+        speed_budget=dict(v.speed_budget) or None,
+        evidence={k: (e or {}).get("fingerprint") for k, e in v.evidence.items()} or None,
+    )
+    session.add(row)
+    return row
+
+
+def history(session, limit: int = 20) -> list[dict[str, Any]]:
+    """The newest ``limit`` answers, newest first, as the API serves them."""
+    from sqlalchemy import select
+
+    from .models import VerdictRecord
+
+    rows = session.scalars(
+        select(VerdictRecord).order_by(VerdictRecord.id.desc()).limit(max(1, min(limit, 200)))
+    ).all()
+    return [{
+        "decided_at": r.decided_at.isoformat() if r.decided_at else None,
+        "fingerprint": r.fingerprint,
+        "previous_fingerprint": r.previous_fingerprint,
+        "source": r.source,
+        "policy": r.policy,
+        "detail": r.detail,
+        "methodology_version": r.methodology_version,
+        "speed_budget": r.speed_budget,
+        "evidence": r.evidence,
+    } for r in rows]

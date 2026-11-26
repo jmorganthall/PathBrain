@@ -29,6 +29,7 @@ from . import (
     routes_smoothness,
     routes_sweep,
     routes_trends,
+    routes_verdict,
 )
 
 api_router = APIRouter(prefix="/api")
@@ -57,3 +58,4 @@ api_router.include_router(routes_firewall.router, tags=["firewall"])
 api_router.include_router(routes_alerts.router, tags=["alerts"])
 api_router.include_router(routes_write_probe.router, tags=["firewall"])
 api_router.include_router(routes_field.router, tags=["field"])
+api_router.include_router(routes_verdict.router, tags=["verdict"])
