@@ -7,7 +7,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
 
-from .. import crown_follower, verdict
+from .. import verdict
 from ..database import get_session
 
 router = APIRouter()
@@ -20,6 +20,5 @@ def get_verdict(
 ) -> dict:
     """The Verdict now (resolved live, as Auto-apply resolves it) and its history, newest
     first. Read-only: the history is written by the crown check, never by this read."""
-    pooled = crown_follower.current_crown(session)
-    now = verdict.current(session, (pooled or {}).get("fingerprint"))
+    now = verdict.now(session)
     return {"verdict": now.as_dict(), "history": verdict.history(session, history)}

@@ -1677,9 +1677,11 @@ def profile_standings(session, cfg: dict | None, *, device_id: str | None = None
         from .config_store import get_config
         from .methodology import ensure_current_methodology, overall_metrics, overall_weights
 
-        crown = crown_follower.current_crown(session)
-        crown_fp = (crown or {}).get("fingerprint")
-        crown_label = (crown or {}).get("label")
+        from . import verdict
+
+        crown = verdict.crown(session)
+        crown_fp = crown.fingerprint if crown else None
+        crown_label = crown.label if crown else None
         if fps:
             methodology = ensure_current_methodology(session, cfg or get_config(session))
             metrics_, required_ = overall_metrics(methodology.definition or {})

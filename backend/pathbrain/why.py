@@ -39,6 +39,7 @@ from sqlalchemy import and_, select
 from sqlalchemy.orm import Session
 
 from . import crown_follower, profile_aggregates, profile_names
+from . import verdict as the_verdict
 from .config_store import get_config
 from .interpret import derive
 from .logging_config import get_logger
@@ -275,11 +276,10 @@ def _pick_reference(session: Session, version: str, fp: str, vs: str | None, min
         return vs, "chosen"
     if fp != SQM_OFF_FINGERPRINT and _has_runs(session, version, SQM_OFF_FINGERPRINT):
         return SQM_OFF_FINGERPRINT, "sqm_off"
-    crown = crown_follower.current_crown(session) or {}
-    cfp = crown.get("fingerprint")
+    cfp = the_verdict.crown_fingerprint(session)
     if cfp and cfp != fp and _has_runs(session, version, cfp):
         return cfp, "crown"
-    # No ledger crown to lean on: the best-graded confident profile that isn't this one.
+    # No crown to lean on: the best-graded confident profile that isn't this one.
     definition = ensure_current_methodology(session, get_config(session)).definition or {}
     crown_metrics, required = overall_metrics(definition)
     weights = overall_weights(definition)

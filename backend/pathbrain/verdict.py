@@ -20,9 +20,9 @@ from __future__ import annotations
 
 from typing import Any
 
-from .domain.verdict import EVIDENCE_KEYS, Verdict
+from .domain.verdict import EVIDENCE_KEYS, CrownRead, Verdict
 
-__all__ = ["EVIDENCE_KEYS", "Verdict", "current", "history", "record"]
+__all__ = ["EVIDENCE_KEYS", "CrownRead", "Verdict", "crown", "crown_fingerprint", "current", "history", "now", "record"]
 
 
 def current(session, pooled_best_fp: str | None) -> Verdict:
@@ -31,6 +31,50 @@ def current(session, pooled_best_fp: str | None) -> Verdict:
     from . import crowning
 
     return Verdict.from_resolution(crowning.resolve(session, pooled_best_fp))
+
+
+def now(session) -> Verdict:
+    """The verdict now, for a reader with no pooled crown of its own to hand in: the
+    pooled crown is taken from the crown ledger, as the API has always read it."""
+    from . import crown_follower
+
+    pooled = crown_follower.current_crown(session)
+    return current(session, (pooled or {}).get("fingerprint"))
+
+
+def crown(session) -> CrownRead | None:
+    """The sitting crown as last decided — one indexed read, cheap enough for any page.
+
+    Reads the newest row of the Verdict's history. Until that history has a row (a fresh
+    install, or before the first crown check after this table arrived) the pooled crown
+    ledger stands in, and ``basis`` says so. ``None`` only when neither has an answer."""
+    from sqlalchemy import select
+
+    from . import crown_follower
+    from .models import CrownEvent, VerdictRecord
+
+    row = session.scalars(select(VerdictRecord).order_by(VerdictRecord.id.desc()).limit(1)).first()
+    if row is None:
+        pooled = crown_follower.current_crown(session)
+        if not pooled:
+            return None
+        return CrownRead(pooled.get("fingerprint"), pooled.get("label"), pooled.get("since"), "pooled")
+    label = None
+    if row.fingerprint:
+        label = session.scalars(
+            select(CrownEvent.label)
+            .where(CrownEvent.fingerprint == row.fingerprint, CrownEvent.label.is_not(None))
+            .order_by(CrownEvent.id.desc())
+            .limit(1)
+        ).first()
+    since = crown_follower._as_utc(row.decided_at).isoformat() if row.decided_at else None
+    return CrownRead(row.fingerprint, label, since, "verdict")
+
+
+def crown_fingerprint(session) -> str | None:
+    """Just the sitting crown's fingerprint (`crown`), or ``None``."""
+    read = crown(session)
+    return read.fingerprint if read else None
 
 
 def _same_answer(row, v: Verdict) -> bool:

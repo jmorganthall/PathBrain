@@ -16,7 +16,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from .. import crown_follower, portable
+from .. import portable, verdict
 from ..config_store import get_config
 from ..database import get_session, session_scope
 from ..logging_config import get_logger
@@ -29,10 +29,9 @@ log = get_logger("api.portable")
 
 def _crown_fp(session: Session) -> str | None:
     try:
-        crown = crown_follower.current_crown(session)
+        return verdict.crown_fingerprint(session)
     except Exception:  # noqa: BLE001 — the crown is a preference for the reference, not a need
         return None
-    return (crown or {}).get("fingerprint")
 
 
 def _detail(session: Session, run: PortableRun, cfg: dict) -> dict:

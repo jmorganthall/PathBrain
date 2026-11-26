@@ -63,3 +63,21 @@ class Verdict:
             "speed_budget": dict(self.speed_budget) or None,
             **{k: v for k, v in self.evidence.items()},
         }
+
+
+@dataclass(frozen=True)
+class CrownRead:
+    """The sitting crown as last decided, for a reader that needs only who it is.
+
+    * ``fingerprint`` — the crown; ``None`` when the newest answer named nobody.
+    * ``label`` — its settings label as the crown ledger last wrote it; ``None`` when the
+      ledger never named it.
+    * ``since`` — when that answer was decided (ISO 8601, UTC); ``None`` when unknown.
+    * ``basis`` — ``"verdict"`` when read from the Verdict's history, ``"pooled"`` while
+      that history is still empty and the older pooled ledger stands in.
+    """
+
+    fingerprint: str | None
+    label: str | None
+    since: str | None
+    basis: str

@@ -42,6 +42,7 @@ import SpeedIcon from "@mui/icons-material/Speed";
 import ImageIcon from "@mui/icons-material/Image";
 import StackedLineChartIcon from "@mui/icons-material/StackedLineChart";
 
+import { useVerdict } from "../hooks/useVerdict";
 import { api } from "../api/client";
 import type { OverallCorner, OverallOut, OverallProfile, FastestLegs} from "../api/types";
 import { FoldCard, HelpTip } from "../components/Explain";
@@ -317,6 +318,13 @@ export default function Overall() {
   const inputs = data && "slack" in data.inputs ? data.inputs : null;
   const corners = data && "fused" in data.corners ? data.corners : null;
   const best = data?.best ?? null;
+  // The crown the Verdict names (what Auto-apply follows). Normally the fused #1; when the
+  // speed budget or another policy names someone else, the card says so instead of
+  // telling the reader to run a profile Auto-apply will not.
+  const crownNow = useVerdict();
+  const crownFp = crownNow?.fingerprint ?? null;
+  const crownRow = crownFp ? (data?.profiles ?? []).find((p) => p.fingerprint === crownFp) ?? null : null;
+  const fusedIsCrown = best != null && crownFp != null && best.fingerprint === crownFp;
   const rows = useMemo(
     () => (data?.profiles ?? []).filter((p) => !p.is_sqm_off),
     [data],
@@ -369,13 +377,22 @@ export default function Overall() {
                   <EmojiEventsIcon sx={{ color: "warning.main", fontSize: 40, flexShrink: 0 }} />
                   <Box sx={{ minWidth: 0 }}>
                     <Typography variant="overline" color="text.secondary" sx={{ lineHeight: 1.4 }}>
-                      Run this profile
+                      {crownFp == null || fusedIsCrown ? "Run this profile" : "Best on the fused Overall"}
                     </Typography>
                     <Typography variant="h5" sx={{ lineHeight: 1.2 }}>
                       <Link component={RouterLink} to={profileHref(best.fingerprint)} color="inherit">
                         {nameOf(best)}
                       </Link>
                     </Typography>
+                    {crownNow && crownFp && !fusedIsCrown && (
+                      <Typography variant="caption" color="warning.main" sx={{ display: "block" }}>
+                        The crown Auto-apply follows is{" "}
+                        <Link component={RouterLink} to={profileHref(crownFp)} color="inherit">
+                          {crownRow ? nameOf(crownRow) : crownFp.slice(0, 8)}
+                        </Link>
+                        : {crownNow.detail}
+                      </Typography>
+                    )}
                     <Typography variant="caption" color="text.secondary" sx={{ display: "block" }}>
                       {best.iterations} iterations on the pooled record
                       {best.rounds
@@ -554,7 +571,7 @@ export default function Overall() {
                   </TableHead>
                   <TableBody>
                     {tableRows.map((r) => {
-                      const isBest = best && r.fingerprint === best.fingerprint;
+                      const isBest = crownFp != null && r.fingerprint === crownFp;
                       return (
                         <TableRow key={r.fingerprint} hover sx={{ opacity: r.eligible ? 1 : 0.6 }}>
                           <TableCell align="right">{r.fused_rank ?? "—"}</TableCell>

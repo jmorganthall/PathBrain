@@ -17,7 +17,7 @@
     {
       "id": "crown-judged-by-a-reader",
       "title": "A reader asks a single judge for the crown instead of the Verdict",
-      "pattern": "\\boverall_ranking\\.crown\\(|\\blatest_champion\\(|\\bmath_crown\\(|\\blcp_first_crown\\(|\\bfcp_first_crown\\(|\\bleg_first_crown\\(|\\bactive_policy\\(",
+      "pattern": "\\boverall_ranking\\.crown\\(|\\blatest_champion\\(|\\bmath_crown\\(|\\blcp_first_crown\\(|\\bfcp_first_crown\\(|\\bleg_first_crown\\(|\\bactive_policy\\(|\\bcurrent_crown\\(",
       "include": [
         "backend/pathbrain/**/*.py"
       ],
@@ -25,7 +25,8 @@
         "backend/pathbrain/verdict.py",
         "backend/pathbrain/crowning.py",
         "backend/pathbrain/overall_ranking.py",
-        "backend/pathbrain/pooled_field.py"
+        "backend/pathbrain/pooled_field.py",
+        "backend/pathbrain/crown_follower.py"
       ],
       "fix": "Read the crown and its evidence from verdict.current() (or GET /api/verdict). A judge's own crown is evidence shown beside the Verdict, never a crown a reader acts on."
     },
