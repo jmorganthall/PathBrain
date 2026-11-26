@@ -503,3 +503,86 @@ def test_every_corner_on_the_overall_page_carries_its_gap_to_the_fastest_legs(cl
     crowns = client.get("/api/settings/crowns").json()
     assert crowns["fcp_first"]["fingerprint"] == _fp("fast_fcp")
     assert crowns["fastest"]["fcp"]["fingerprint"] == _fp("fast_fcp")
+
+
+# ── "vs fastest" per instrument era (v19's read) ───────────────────────────────────────
+
+def _add_era_runs(name: str, at, fcps: list[float], lcps: list[float], *, iterations: int = 20) -> None:
+    """Raw-leg runs on ``name``, all created at ``at`` (the era they belong to)."""
+    fp = _fp(name)
+    crown = _crown()
+    with session_scope() as s:
+        for fcp, lcp in zip(fcps, lcps):
+            run = Run(status=RunStatus.COMPLETE, iterations=iterations, created_at=at,
+                      settings_fingerprint=fp, settings=_settings(fp))
+            s.add(run)
+            s.flush()
+            s.add(Score(run_id=run.id, methodology_version=VERSION, is_at_measure=False,
+                        comparability="exact", subscores={m: 80.0 for m in crown},
+                        axis_scores={}, weights_used={},
+                        metric_values={"fcp": fcp, "lcp": lcp}))
+
+
+@pytest.fixture
+def two_eras(monkeypatch):
+    """A step on 2026-10-26 (the sites got slower), and this module's version reading per
+    era as v19 does. ``fast_then`` was measured only before the step, ``new`` only after it,
+    ``both`` on each side of it."""
+    from datetime import datetime, timezone
+
+    from pathbrain import evidence
+
+    step = datetime(2026, 10, 26, tzinfo=timezone.utc)
+    monkeypatch.setattr(evidence, "instrument_epochs",
+                        lambda *a, **k: {"boundaries": [{"at": "2026-10-26"}], "times": [step]})
+    pooled_field.invalidate_era_cache()
+    with session_scope() as s:
+        row = s.get(Methodology, VERSION)
+        saved = copy.deepcopy(row.definition)
+        row.definition = {**copy.deepcopy(row.definition), "ranking": {"pooled_read": "epochs"}}
+    before, after = datetime(2026, 10, 1), datetime(2026, 11, 20)
+    _add_era_runs("fast_then", before, [300.0, 301.0, 299.0], [500.0, 501.0, 499.0])
+    _add_era_runs("both", before, [310.0, 311.0, 309.0], [520.0, 521.0, 519.0])
+    _add_era_runs("both", after, [330.0, 331.0, 329.0], [1100.0, 1101.0, 1099.0])
+    _add_era_runs("new", after, [320.0, 321.0, 319.0], [1000.0, 1001.0, 999.0])
+    yield
+    with session_scope() as s:
+        s.get(Methodology, VERSION).definition = saved
+    pooled_field.invalidate_era_cache()
+
+
+def test_vs_fastest_compares_runs_from_the_same_era_only(two_eras):
+    """The whole record would price ``new`` at +100% LCP against a profile last measured
+    before the sites slowed; per era it is the fastest of its own era, and ``both`` is
+    priced on its newest era's runs against that era's fastest."""
+    with session_scope() as s:
+        fastest = pooled_field.fastest_legs(s, VERSION, 15)
+        assert fastest["read"] == "epochs" and fastest["era"] == 1 and fastest["since"] == "2026-10-26"
+        assert fastest["lcp"]["fingerprint"] == _fp("new") and fastest["lcp"]["ms"] == 1000.0
+        assert fastest["by_era"]["0"]["lcp"]["fingerprint"] == _fp("fast_then")
+        gaps = pooled_field.leg_gaps(s, VERSION, fastest, [_fp("new"), _fp("both"), _fp("fast_then")])
+    assert gaps[_fp("new")]["lcp"]["is_fastest"] and gaps[_fp("new")]["lcp"]["delta_ms"] == 0.0
+    both = gaps[_fp("both")]["lcp"]
+    assert (both["ms"], both["fastest_ms"], both["pct"], both["era"]) == (1100.0, 1000.0, 10.0, 1)
+    assert both["era_since"] == "2026-10-26"
+    # A profile measured only in the old era is priced against the old era's fastest.
+    old = gaps[_fp("fast_then")]["lcp"]
+    assert old["era"] == 0 and old["is_fastest"] and old["era_since"] is None
+
+
+def test_the_speed_budget_reads_the_same_era(two_eras):
+    """Auto-apply's budget check is the same reading: ``new`` is within any budget in its
+    own era, though the whole record put it twice as slow as a profile from the fast era."""
+    from pathbrain import crowning
+
+    with session_scope() as s:
+        check = crowning.budget_check(s, _fp("new"), {"enabled": True, "lcp_pct": 10.0, "fcp_pct": 20.0})
+    assert check is not None and check["within"] is True
+
+
+def test_a_whole_record_methodology_keeps_the_whole_record_read():
+    """Only a version that declares the per-era read changes; every other one is untouched."""
+    _add_raw_runs("fast_lcp", [400.0, 401.0, 399.0], [500.0, 501.0, 499.0])
+    with session_scope() as s:
+        fastest = pooled_field.fastest_legs(s, VERSION, 15)
+    assert "by_era" not in fastest and fastest["lcp"]["fingerprint"] == _fp("fast_lcp")

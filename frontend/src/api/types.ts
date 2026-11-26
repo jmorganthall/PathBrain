@@ -1853,6 +1853,11 @@ export interface LegGap {
   bar_ms: number | null;
   clear: boolean;
   is_fastest: boolean;
+  // Under a per-era methodology (v19): the instrument era both medians come from, the day it
+  // started (null for the first era) and who holds that era's fastest median on this leg.
+  era?: number;
+  era_since?: string | null;
+  fastest_name?: string | null;
 }
 export interface LegGaps {
   fcp?: LegGap;
@@ -1869,6 +1874,10 @@ export interface FastestLegs {
   profiles: number;
   fcp: FastestLegHolder;
   lcp: FastestLegHolder;
+  // Per-era read (v19): the newest era's fastest is the top level; `since` is when it began.
+  read?: "epochs";
+  era?: number;
+  since?: string | null;
 }
 
 export interface CrownFollowConfig {
