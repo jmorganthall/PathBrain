@@ -4334,3 +4334,35 @@ def test_each_counted_round_records_both_sides_raw_milliseconds(monkeypatch):
         assert len(rows) == 2 * pairs
         assert sorted({r.round_index for r in rows}) == list(range(pairs))
     assert got == {("fcp", 280.0, 300.0), ("lcp", 1000.0, 900.0)}
+
+
+def test_when_the_methodology_crowns_by_the_ring_the_crown_defends(monkeypatch):
+    """One chain, S17: under a methodology whose judgement says the ring crowns, the crown
+    Auto-apply follows stands in the ring, and the ring's crown rule and win margin are the
+    methodology's, whatever the settings say."""
+    from dataclasses import replace
+
+    from pathbrain import methodology, verdict
+    from pathbrain.config_store import get_config
+
+    field = _field(("crownfp", 80.0), ("pooled", 90.0), ("other", 70.0), best="pooled")
+    with session_scope() as s:
+        s.query(Duel).delete()
+        cfg = get_config(s)
+        row = methodology.ensure_current_methodology(s, cfg)
+        today = methodology.judgement(row.version, row.definition or {}, cfg)
+        # No judgement block: the ring is as configured, the pooled crown stands in.
+        assert duel_mod._duel_config(s)["crown_rule"] == cfg["duel"]["crown_rule"]
+        fp, _ = duel_mod.select_incumbent(s, field, None, {"rematch_days": 7})
+        assert fp == "pooled"
+
+    stated = replace(today, source="methodology", crowned_by="ring",
+                     ring_crown_rule="lineal", ring_min_margin=0.0)
+    monkeypatch.setattr(methodology, "current_judgement", lambda session: stated)
+    monkeypatch.setattr(verdict, "crown_fingerprint", lambda session: "crownfp")
+    with session_scope() as s:
+        ring = duel_mod._duel_config(s)
+        assert (ring["crown_rule"], ring["min_margin"]) == ("lineal", 0.0)
+        fp, why = duel_mod.select_incumbent(s, field, None, {"rematch_days": 7})
+    assert fp == "crownfp"
+    assert "the crown defends" in why

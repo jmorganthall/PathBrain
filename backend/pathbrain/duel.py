@@ -563,7 +563,33 @@ def _median(values: list[float]) -> float:
 
 
 def _duel_config(session) -> dict:
-    return get_config(session).get("duel", {}) or {}
+    """The ring's settings, with the methodology's judgement over the ones that decide the
+    crown: under a version that states a judgement block (`methodology.judgement`), the
+    ring's crown rule and the margin a win must clear are the methodology's, whatever the
+    settings say. A version with no block reads the settings, as before."""
+    cfg = dict(get_config(session).get("duel", {}) or {})
+    try:
+        from .methodology import current_judgement
+
+        judged = current_judgement(session)
+    except Exception:  # noqa: BLE001 — an unreadable methodology leaves the ring as configured
+        log.debug("duel: methodology judgement unavailable", exc_info=True)
+        return cfg
+    if judged.source == "methodology":
+        cfg["crown_rule"] = judged.ring_crown_rule
+        cfg["min_margin"] = judged.ring_min_margin
+    return cfg
+
+
+def _crowned_by_ring(session) -> bool:
+    """Whether the current methodology crowns by the ring (`Judgement.crowned_by`), so the
+    crown itself defends and only a ring win moves it."""
+    try:
+        from .methodology import current_judgement
+
+        return current_judgement(session).crowned_by == "ring"
+    except Exception:  # noqa: BLE001
+        return False
 
 
 def _live_scoreboard(
@@ -1779,7 +1805,7 @@ def _fused_target(session, cfg: dict | None = None) -> dict | None:
     try:
         from . import crowning, overall_ranking
 
-        if crowning.active_policy(session) != "fused":
+        if crowning.active_policy(session) != "fused" and not _crowned_by_ring(session):
             return None
         return overall_ranking.ring_target(session)
     except Exception:  # noqa: BLE001 — matchmaking must never be why a session fails
@@ -1830,6 +1856,18 @@ def select_incumbent(
     ``(fingerprint, reason)``.
     """
     pooled_fp = field.get("best_fingerprint")
+    if _crowned_by_ring(session):
+        # The methodology crowns by the ring (one chain): the crown Auto-apply follows is
+        # what stands in the ring, and only a challenger's win against it moves it. The
+        # fused ranking still orders the rivals (`_fused_target`); it never names the defender.
+        from .verdict import crown_fingerprint
+
+        crown_fp = crown_fingerprint(session)
+        profiles = {p["fingerprint"]: p for p in field.get("profiles", [])}
+        if crown_fp in profiles and _reachable(profiles[crown_fp].get("settings"), baseline):
+            return crown_fp, "the crown defends (the methodology crowns by the ring)"
+        if crown_fp is not None:
+            log.info("Duel: the crown (%s) cannot be set from the live environment — the belt defends", crown_fp)
     if fused is None:
         fused = _fused_target(session, cfg)
     if fused:
@@ -5162,9 +5200,7 @@ def latest_champion(session, max_age_days: int) -> dict | None:
     cutoff = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(days=max_age_days)
     sessions_data = _ledger_sessions(session)
     ratings = fit_bradley_terry(_pair_record(sessions_data))
-    from .config_store import get_config
-
-    duel_cfg = get_config(session).get("duel", {}) or {}
+    duel_cfg = _duel_config(session)
     rule = crown_rule(duel_cfg)
     fp, belt, _why = belt_holder(sessions_data, ratings, rule, rank_sigma(duel_cfg))
     if fp is None:
@@ -5353,9 +5389,7 @@ def standings(limit_sessions: int = 50) -> dict:
         ]
         # Read inside the same session as the ledger: the belt rule decides which of the
         # two verdicts the badge states, and reading it later would need a second session.
-        from .config_store import get_config
-
-        cfg = get_config(session).get("duel", {}) or {}
+        cfg = _duel_config(session)
 
     records: dict[str, dict] = {}
     h2h: dict[str, dict[str, dict]] = {}
