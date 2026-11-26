@@ -9,7 +9,7 @@ import pytest
 from pathbrain import coordinator, crown_follower
 from pathbrain.config_store import save_config
 from pathbrain.database import session_scope
-from pathbrain.models import CrownEvent
+from pathbrain.models import CrownEvent, VerdictRecord
 from pathbrain.providers import get_provider
 from pathbrain.providers.mock import _OVERRIDES
 from pathbrain.settings_profile import SQM_OFF_FINGERPRINT, fingerprint, normalize
@@ -30,12 +30,14 @@ def _clean():
     _reset_state()
     with session_scope() as session:
         session.query(CrownEvent).delete()
+        session.query(VerdictRecord).delete()
         save_config(session, {"crown_follow": {"enabled": False, "interval_minutes": 360}})
     yield
     _OVERRIDES.clear()
     _reset_state()
     with session_scope() as session:
         session.query(CrownEvent).delete()
+        session.query(VerdictRecord).delete()
         save_config(session, {"crown_follow": {"enabled": False, "interval_minutes": 360}})
 
 
@@ -371,6 +373,34 @@ def test_stats_reign_and_window_math():
     assert stats["median_reign_hours"] == 48.0
     assert stats["mean_reign_hours"] == pytest.approx(79.7, abs=0.1)
     assert stats["changes_per_day"] == pytest.approx(0.3, abs=0.01)
+    assert stats["basis"] == "pooled"  # no Verdict recorded yet
+
+
+def test_stats_count_the_verdict_once_it_has_a_history():
+    """Churn is about the crown Auto-apply follows. Once the Verdict has a history it is
+    what is counted, on the same math, and the pooled ledger is not; a new source or policy
+    naming the same crown is not a crown change."""
+    now = datetime.now(timezone.utc)
+    with session_scope() as session:
+        session.add(CrownEvent(kind="change", fingerprint="P", previous_fingerprint=None,
+                               created_at=now - timedelta(days=20)))
+        for fp, prev, src, at in [
+            ("A", None, "fused", now - timedelta(days=10)),
+            ("B", "A", "fused", now - timedelta(days=8)),
+            ("B", "B", "pooled", now - timedelta(days=5)),   # same crown, new source
+            ("A", "B", "fused", now - timedelta(days=2)),
+            ("C", "A", "fused", now - timedelta(hours=1)),
+        ]:
+            session.add(VerdictRecord(fingerprint=fp, previous_fingerprint=prev, source=src,
+                                      policy="fused", detail="t", decided_at=at))
+            session.flush()
+    with session_scope() as session:
+        stats = crown_follower.stats(session, now=now)
+    assert stats["basis"] == "verdict"
+    assert stats["total_changes"] == 3
+    assert stats["current_crown_fingerprint"] == "C"
+    assert stats["median_reign_hours"] == 48.0
+    assert stats["tracked_since"].startswith((now - timedelta(days=10)).date().isoformat())
 
 
 # ── API ──────────────────────────────────────────────────────────────────────────────
