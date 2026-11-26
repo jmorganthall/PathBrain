@@ -56,7 +56,8 @@ from .models import Duel, DuelStatus, LeverCampaign, Methodology, RingRoundMs, S
 from .rating import ELO_SCALE, PROVISIONAL_PAIRS, RANK_SIGMA, fit_bradley_terry
 from .providers import get_provider
 from .runner import request_stop, run_cancelled, run_chunk, teardown_plugins
-from .settings_profile import fingerprint, normalize, plan_apply
+from .firewall_write import reshape, unshape
+from .settings_profile import SQM_OFF_FINGERPRINT, fingerprint, is_sqm_off_profile, normalize, plan_apply
 from .settings_profile import summarize as summarize_settings
 
 log = get_logger("duel")
@@ -2538,6 +2539,70 @@ def ledger_ratings(session, limit_sessions: int = 50) -> dict[str, dict]:
     return fit_bradley_terry(_pair_record(_ledger_sessions(session, limit_sessions)))
 
 
+#: How often the ring races SQM off against the crown, in nights (``duel.sqm_off_every_nights``).
+#: SQM off is "just another profile" (Josh, Nov 26): what shaping buys should be measured
+#: back to back, not assumed from the pooled record. 0 turns the regular check off.
+DEFAULT_SQM_OFF_EVERY_NIGHTS = 3
+
+
+def sqm_off_every_nights(cfg: dict | None) -> int:
+    """`DEFAULT_SQM_OFF_EVERY_NIGHTS`, or the configured cadence (0 = off)."""
+    cfg = cfg or {}
+    raw = cfg["sqm_off_every_nights"] if "sqm_off_every_nights" in cfg else DEFAULT_SQM_OFF_EVERY_NIGHTS
+    try:
+        return max(0, int(raw))
+    except (TypeError, ValueError):
+        return DEFAULT_SQM_OFF_EVERY_NIGHTS
+
+
+def sqm_off_due(session, cfg: dict | None, now: datetime | None = None) -> bool:
+    """Whether tonight's ring should race SQM off: the cadence is on and the ring has not
+    fought it (any outcome but an abort) within the last ``every - ½`` days, so a nightly
+    window meets it every ``every`` nights whatever hour it starts."""
+    every = sqm_off_every_nights(cfg)
+    if every <= 0:
+        return False
+    now = now or datetime.now(timezone.utc)
+    rows = session.scalars(
+        select(Duel)
+        .where(Duel.status == DuelStatus.COMPLETE, Duel.finished_at.is_not(None))
+        .order_by(Duel.finished_at.desc())
+        .limit(60)
+    ).all()
+    for d in rows:
+        for m in d.matchups or []:
+            if not isinstance(m, dict) or outcome(m) in ("", ABORTED):
+                continue
+            if SQM_OFF_FINGERPRINT in (m["incumbent"] if "incumbent" in m else None,
+                                       m["challenger"] if "challenger" in m else None):
+                when = d.finished_at if d.finished_at.tzinfo else d.finished_at.replace(tzinfo=timezone.utc)
+                return now - when >= timedelta(days=every - 0.5)
+    return True
+
+
+def _nominate_sqm_off_if_due(cfg: dict, field: dict) -> str | None:
+    """Put SQM off forward for tonight's ring when the cadence says it is due and the field
+    has it (it has runs from the nightly baseline test). Seated like any nomination: as a
+    live threat against the crown, in the prospect seat. Returns the reason, or None."""
+    profiles = field["profiles"] if "profiles" in field else []
+    if not any(p["fingerprint"] == SQM_OFF_FINGERPRINT for p in profiles):
+        return None
+    try:
+        from .nominations import nominate
+
+        with session_scope() as session:
+            if not sqm_off_due(session, cfg):
+                return None
+            every = sqm_off_every_nights(cfg)
+            reason = (f"the regular SQM off check: raced against the crown every {every} nights, "
+                      "so what shaping buys is measured back to back")
+            row = nominate(session, SQM_OFF_FINGERPRINT, "schedule", reason)
+            return reason if row is not None else None
+    except Exception:  # noqa: BLE001 — a missed check waits for the next night; it never stops the ring
+        log.warning("duel: the SQM off check could not be scheduled", exc_info=True)
+        return None
+
+
 def _open_nominations() -> list[OpenNomination]:
     """The open ring nominations (`nominations.open_nominations`), or none when they
     cannot be read: a nomination orders the queue, it is never why the ring stops."""
@@ -3255,6 +3320,23 @@ def _current_methodology_version(session) -> str | None:
     ).first()
 
 
+def _apply_unshaped(provider) -> None:
+    """Put the firewall on SQM off for a ring leg: shaping off on every pipe
+    (`firewall_write.unshape`), then confirm the firewall now reads as SQM off, the same
+    check `challenger._apply_profile` makes for a shaped profile. Raises ``RuntimeError``
+    (a failed leg, which the ring records and moves past) when either fails;
+    ``FirewallUnavailable`` passes through as it does for any leg."""
+    try:
+        unshape(provider)
+    except FirewallUnavailable:
+        raise
+    except Exception as exc:  # noqa: BLE001 — a provider error is a failed leg, said in words
+        raise RuntimeError(f"could not turn shaping off ({exc})") from exc
+    reached = fingerprint(normalize(provider.discover()))
+    if reached != SQM_OFF_FINGERPRINT:
+        raise RuntimeError(f"shaping did not turn off (the firewall reads as {reached})")
+
+
 def _bout_cannot_differ(settings_by_fp: dict, challenger_fp: str, defender_fp: str) -> str | None:
     """`decidability.cannot_differ` for one bout, on the session's own settings map — the
     reason the two profiles cannot produce a different measurement, or None. Fails CLOSED
@@ -3265,6 +3347,8 @@ def _bout_cannot_differ(settings_by_fp: dict, challenger_fp: str, defender_fp: s
     b = (settings_by_fp.get(defender_fp) or {}).get("settings")
     if not a or not b or challenger_fp == defender_fp:
         return None
+    if is_sqm_off_profile(challenger_fp, a) != is_sqm_off_profile(defender_fp, b):
+        return None  # shaping on against shaping off always differs, whatever the inert fields say
     try:
         return decidability.cannot_differ(a, b, profiles=list(settings_by_fp.values()))
     except Exception:  # noqa: BLE001
@@ -3778,6 +3862,9 @@ def _run_ring(
     counters = {"legs": 0, "iterations": 0, "cycles": 0, "reseeds": 0, "rejudges": 0, "leg_failures": 0}
     # Legs whose profile could not be applied, back to back (cleared by any leg that could).
     apply_streak = FailureStreak(MAX_CONSECUTIVE_LEG_FAILURES)
+    # Whether the last leg left shaping off (an SQM off leg): the next shaped leg turns it
+    # back on first, and the session's restore does whatever happens.
+    shaping = {"off": False}
     seat_kw = dict(p1=p1, alpha=alpha, min_margin=min_margin, min_pairs=min_pairs,
                    max_pairs=max_pairs, streak_wins=streak_wins)
     prospect_on = bool(cfg.get("prospect_seat", True)) and mode != "levers" and n_seats >= 2
@@ -3906,7 +3993,15 @@ def _run_ring(
         # problem. The first cut let one slow reconfigure (one ReadTimeout past the
         # provider's own retries) end a whole lever session with 0 rounds.
         try:
-            _apply_profile(provider, profile["settings"], fp)
+            if is_sqm_off_profile(fp, profile["settings"]):
+                # SQM off is a pipe switch, not a profile write: every pipe off, confirmed.
+                _apply_unshaped(provider)
+                shaping["off"] = True
+            else:
+                if shaping["off"]:
+                    reshape(provider, baseline)
+                _apply_profile(provider, profile["settings"], fp)
+                shaping["off"] = False
         except (FirewallUnavailable, RuntimeError) as exc:
             why = (
                 f"could not apply {profile.get('name') or profile['label']}: {exc}"
@@ -4774,6 +4869,10 @@ def _drive(duel_id: int) -> None:
             log.info("Duel %s: setup done in %.0fs (%s)", duel_id, sum(timings.values()),
                      ", ".join(f"{k} {v:.0f}s" for k, v in timings.items()))
             settings_by_fp = {p["fingerprint"]: p for p in field.get("profiles", [])}
+            if campaign is None:
+                due = _nominate_sqm_off_if_due(cfg, field)
+                if due:
+                    log.info("Duel %s: SQM off nominated — %s", duel_id, due)
             deadline = time.monotonic() + duration_s
             matchups, incumbent_fp, iterations_run = _run_ring_judged(
                 duel_id=duel_id, lease=lease, provider=provider, cfg=cfg, field=field,
@@ -4817,6 +4916,10 @@ def _drive(duel_id: int) -> None:
             # crowning policy (crown_follow.policy = "duel").
             _set_live(duel_id, None)  # no bout in progress any more
             _set_stage(duel_id, "Restoring your original settings")
+            try:
+                reshape(provider, baseline)  # an SQM off leg's pipes back on, first
+            except Exception:  # noqa: BLE001 — never raise out of cleanup
+                log.exception("Duel %s: turning shaping back on failed", duel_id)
             try:
                 restore, _ = plan_apply(baseline, provider.discover())
                 _apply_all(provider, restore)
@@ -6241,6 +6344,7 @@ def reconcile_interrupted_duels(*, now: datetime | None = None) -> int:
             if baseline:
                 try:
                     provider = provider or get_provider()
+                    reshape(provider, baseline)  # a reboot mid SQM off leg leaves shaping off
                     changes, _ = plan_apply(baseline, provider.discover())
                     _apply_all(provider, changes)
                 except Exception:  # noqa: BLE001

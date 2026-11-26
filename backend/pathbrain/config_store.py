@@ -447,6 +447,9 @@ DEFAULT_CONFIG: dict = {
         # deliver — and the ordinary tiers take it from there.
         "prospect_seat": True,
         "prospect_max_pairs": 12,
+        # SQM off is raced against the crown every this many nights (0 = never), in the
+        # prospect seat: what shaping buys, measured back to back (`duel.sqm_off_due`).
+        "sqm_off_every_nights": 3,
         "contenders": "ring",
         "contender_top_n": 8,
         "p1": 0.70,
