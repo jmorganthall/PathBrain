@@ -2755,12 +2755,12 @@ def crowns(session: Session = Depends(get_session)) -> dict:
     indexed row) instead of recomputing ``compute_profiles`` on every dashboard load, and
     the duel side reads the matchup ledger. Neither triggers a scoring pass.
     """
-    from .. import crown_follower, crowning
+    from .. import crown_follower, verdict
     from .. import duel as duel_mod
 
     freshness = duel_mod.champion_freshness_days(get_config(session).get("duel", {}) or {})
     pooled = crown_follower.current_crown(session)
-    resolution = crowning.resolve(session, pooled_best_fp=(pooled or {}).get("fingerprint"))
+    resolution = verdict.current(session, pooled_best_fp=(pooled or {}).get("fingerprint"))
 
     # The duel side: the ladder's champion plus its record in the ring. `latest_champion`
     # returns None once a verdict ages past the rematch window, so a stale champion is
@@ -2828,8 +2828,8 @@ def crowns(session: Session = Depends(get_session)) -> dict:
     # The fused verdict (the Overall page's crown) — present whatever the policy, so the
     # card can show all three names and say which one automation follows.
     fused_out = None
-    fused = resolution.get("fused")
-    if fused is None and resolution["policy"] != "fused":
+    fused = resolution.evidence.get("fused")
+    if fused is None and resolution.policy != "fused":
         try:
             from .. import overall_ranking
 
@@ -2842,8 +2842,8 @@ def crowns(session: Session = Depends(get_session)) -> dict:
     # What each verdict costs in raw time against the fastest on paper — the price of the
     # experience it was crowned for. Best-effort, like every reading on this card.
     math = _math_crown(session)
-    lcp_first = resolution.get("lcp_first") or _leg_first(session, "lcp_first")
-    fcp_first = resolution.get("fcp_first") or _leg_first(session, "fcp_first")
+    lcp_first = resolution.evidence.get("lcp_first") or _leg_first(session, "lcp_first")
+    fcp_first = resolution.evidence.get("fcp_first") or _leg_first(session, "fcp_first")
     if math:
         try:
             from ..pooled_field import paper_cost
@@ -2873,18 +2873,18 @@ def crowns(session: Session = Depends(get_session)) -> dict:
 
     last = crown_follower.status().get("last_result") or {}
     return {
-        "policy": resolution["policy"],
+        "policy": resolution.policy,
         "pooled": pooled,
         "duel": duel_out,
         "fused": fused_out,
         # Which verdict automation currently follows, and whether it fell back.
         "governing": {
-            "source": resolution["source"],
-            "fingerprint": resolution["fingerprint"],
-            "detail": resolution["detail"],
+            "source": resolution.source,
+            "fingerprint": resolution.fingerprint,
+            "detail": resolution.detail,
             # The speed-budget check on the policy's choice: within, or which crown it
             # replaced and by how much it was over.
-            "speed_budget": resolution.get("speed_budget"),
+            "speed_budget": dict(resolution.speed_budget) or None,
         },
         # Champion's live pooled Overall minus the crown's — how far apart the two
         # verdicts sit on the one scale they share. None until both have a live Overall.
