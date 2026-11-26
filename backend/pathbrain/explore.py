@@ -229,13 +229,19 @@ def _median(vals: list[float]) -> float:
 def _best_established(points: list[dict]) -> float:
     """The best Overall the field can actually stand behind — the bar a candidate has to beat.
 
-    Confident profiles when there are any, because that is the same profile the crown names
-    and the number the rest of the app compares against. Thin profiles are in the model (they
+    The crown's own Overall when the crown (the profile the Verdict names, marked
+    ``is_crown`` by `landscape`) is a confident point: a proposal is worth measuring when it
+    could beat the profile it would have to dethrone in the ring, not the pooled #1, which
+    may be a different profile. Otherwise the best confident profile, the number the rest
+    of the app compares against. Thin profiles are in the model (they
     are evidence) but a lucky five-run 99 is not "the best measured" by any honest reading,
     and letting it set the bar would make every real candidate look hopeless against a fluke.
     With nothing confident yet, the pessimistic end of each thin profile's own spread is the
     most that can be claimed.
     """
+    crown = [p["overall"] for p in points if "is_crown" in p and p["is_crown"] and p["confident"]]
+    if crown:
+        return crown[0]
     settled = [p["overall"] for p in points if p.get("confident")]
     if settled:
         return max(settled)
@@ -2341,7 +2347,7 @@ def landscape(
     prediction. It falls back to every scored profile when that leaves too little to model.
 
     ``reference`` is the profile the *conditioned* curves are built around (default: the
-    best measured). The marginal curves marginalize over every other lever; the conditioned
+    crown the Verdict names, else the best measured). The marginal curves marginalize over every other lever; the conditioned
     ones hold the rest of the profile near the reference, which is the difference between
     "profiles with this value tend to score X" and "changing this profile's value to that
     does X".
@@ -2349,6 +2355,14 @@ def landscape(
     from .api.routes_settings import compute_profiles
 
     field = compute_profiles(session, include_weather=False)
+    # The crown as the Verdict names it: the default reference and the bar to beat.
+    try:
+        from . import verdict
+
+        crown_fp = verdict.crown_fingerprint(session)
+    except Exception:  # noqa: BLE001 — without it Explore aims at the best measured, as before
+        log.debug("Explore: the Verdict's crown is unavailable", exc_info=True)
+        crown_fp = None
     scored = [
         p for p in field.get("profiles", [])
         if isinstance(p.get("overall"), (int, float))
@@ -2414,6 +2428,7 @@ def landscape(
                 else None
             ),
             "coords": coords,
+            "is_crown": p["fingerprint"] == crown_fp,
         })
 
     if len(points) < MIN_POINTS or not axes:
@@ -2479,7 +2494,7 @@ def landscape(
     attach_gap_candidates(gaps, points, axes, curves, pairs, already_tried=tried, ring=ring)
 
     by_fp = {p["fingerprint"]: p for p in points}
-    ref = by_fp.get(reference or "") or max(points, key=lambda p: p["overall"])
+    ref = by_fp.get(reference or "") or by_fp.get(crown_fp or "") or max(points, key=lambda p: p["overall"])
     imbalance = _imbalance(points, axes)
     for c in curves:
         # Flag the curve points that are measuring two levers at once, so the chart can

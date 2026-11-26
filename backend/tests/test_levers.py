@@ -457,3 +457,36 @@ def test_a_lever_session_is_started_as_a_kind_not_stored_as_the_ladders_mode(cli
     # The history reports the kind, so a lever session reads as one on every page.
     hist = client.get("/api/duel/history", params={"limit": 3}).json()
     assert any(x["id"] == d.id and x["mode"] == "levers" for x in hist["duels"])
+
+
+def test_the_book_sets_aside_matches_fought_on_another_scale(monkeypatch):
+    """A lever's margin is in Overall points, and Overall points from another rubric are a
+    different number. The book pools only matches read on the current methodology's scale;
+    an unstamped (pre-stamp) match is kept and counted."""
+    q1514, q300 = _settings(quantum=1514), _settings(quantum=300)
+    a, b = _fp(q1514), _fp(q300)
+    _seed_run(a, q1514), _seed_run(b, q300)
+    lever = {"pipe": "wan", "field": "quantum", "field_label": "Quantum", "unit": None, "from": 1514, "to": 300}
+    here = _match(a, b, wins_i=2, wins_c=10, delta=1.5, lever=lever)
+    here["methodology"] = "v-current"
+    old = _match(a, b, wins_i=10, wins_c=2, delta=-1.5, verdict="incumbent", lever=lever)
+    old["methodology"] = "v-other"
+    unstamped = _match(a, b, wins_i=3, wins_c=9, delta=1.0, lever=lever)
+    monkeypatch.setattr(levers, "_current_version", lambda session: "v-current")
+    monkeypatch.setattr(levers, "same_scale", lambda x, y: x == y)
+    with session_scope() as s:
+        s.query(Duel).delete()
+        s.add(Duel(status=DuelStatus.COMPLETE, matchups=[here, old, unstamped],
+                   finished_at=datetime.now(timezone.utc), duration_s=60))
+        s.commit()
+    try:
+        with session_scope() as s:
+            book = levers.lever_ledger(s)
+        assert book["matches_other_scale"] == 1 and book["matches_unstamped"] == 1
+        assert book["matches_used"] == 2 and book["methodology"] == "v-current"
+        q = next(l for l in book["levers"] if (l["pipe"], l["field"]) == ("wan", "quantum"))
+        assert q["rounds"] == 24 and q["wins_lower"] == 19
+    finally:
+        with session_scope() as s:
+            s.query(Duel).delete()
+            s.commit()

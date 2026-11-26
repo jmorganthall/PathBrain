@@ -43,6 +43,7 @@ from statistics import median
 from sqlalchemy import func, select
 
 from .logging_config import get_logger
+from .methodology import same_scale
 from .models import Run, RunStatus
 from .settings_profile import _field_equal, _to_number, environment_signature, fingerprint, summarize
 from .shaper_fields import WRITABLE_FIELDS, coerce_value, field as shaper_field, format_display
@@ -598,12 +599,30 @@ def _agreement(prediction: str, direction: str) -> tuple[str, str]:
     return "measured", f"The ring finds that {direction} helps here."
 
 
+def _current_version(session) -> str | None:
+    """The current methodology's version, or ``None`` when it cannot be read (the book
+    then pools every match, as it always did)."""
+    try:
+        from .config_store import get_config
+        from .methodology import ensure_current_methodology
+
+        return ensure_current_methodology(session, get_config(session)).version
+    except Exception:  # noqa: BLE001 — the filter is a refinement, never why the book fails
+        log.debug("levers: current methodology unavailable", exc_info=True)
+        return None
+
+
 def lever_ledger(session, *, limit_sessions: int = 50) -> dict:
     """Every single-lever match on the duel ledger, pooled per lever and per transition,
     read beside the mechanism prediction for that lever."""
     from .duel import _ledger_sessions, counts_as_evidence, outcome
 
     sessions = _ledger_sessions(session, limit_sessions)
+    # Only rounds read on the current methodology's scale are pooled: a margin graded under
+    # another rubric is a different number, and the ring's own standings already keep to
+    # one scale. A match with no methodology stamp (written before matches carried one) is
+    # kept and counted, so the book does not silently lose its oldest evidence.
+    current_version = _current_version(session)
     fps: set[str] = set()
     for sess in sessions:
         for m in sess.get("matchups") or []:
@@ -613,9 +632,15 @@ def lever_ledger(session, *, limit_sessions: int = 50) -> dict:
     lookup = _settings_lookup(session, fps)
 
     by_lever: dict[tuple[str, str], dict] = {}
-    used = skipped = aborted = 0
+    used = skipped = aborted = other_scale = unstamped = 0
     for sess in sessions:
         for m in sess.get("matchups") or []:
+            fought_under = m["methodology"] if "methodology" in m else None
+            if current_version and fought_under and not same_scale(str(fought_under), current_version):
+                other_scale += 1
+                continue
+            if current_version and not fought_under:
+                unstamped += 1
             if outcome(m) == "aborted" and not counts_as_evidence(m):
                 # Only an aborted match with no comparable rounds is set aside: one that
                 # fought rounds before it stopped still measured the lever.
@@ -699,6 +724,11 @@ def lever_ledger(session, *, limit_sessions: int = 50) -> dict:
         "matches_used": used,
         "matches_skipped": skipped,
         "matches_aborted": aborted,
+        # Matches fought on another methodology's scale (set aside), and matches with no
+        # methodology stamp (kept): see the filter at the top.
+        "matches_other_scale": other_scale,
+        "matches_unstamped": unstamped,
+        "methodology": current_version,
         "min_rounds": MIN_ROUNDS,
         "alpha": ALPHA,
         "note": (
@@ -808,11 +838,11 @@ def resolve_campaign(session, campaign_id: int | None = None, base_fingerprint: 
     open_rows = list_campaigns(session, include_closed=False)
     if open_rows:
         return open_rows[0]
-    from .crown_follower import current_crown
+    from . import verdict
 
-    crown = current_crown(session) or {}
-    if crown.get("fingerprint"):
-        return create_campaign(session, str(crown["fingerprint"]))
+    crown_fp = verdict.crown_fingerprint(session)
+    if crown_fp:
+        return create_campaign(session, str(crown_fp))
     raise ValueError("No lever campaign to continue and no crown to open one on — choose a base profile")
 
 
