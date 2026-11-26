@@ -890,6 +890,99 @@ def score_run_under(session, run, methodology, artifact_base: str | None = None)
 
 
 
+# A same-scale re-grade copies the sibling's Score once this many freshly scored runs have
+# matched their sibling row exactly; a single mismatch turns the copy off for the pass.
+SAME_SCALE_PROOF_RUNS = 20
+
+_CARRIED_FIELDS = ("comparability", "missing_metrics", "axis_scores", "subscores",
+                   "weights_used", "metric_values", "bands")
+
+
+class SameScaleCarry:
+    """Re-grade a same-scale version (v19 over v17) by copying, once copying is proven safe.
+
+    Two versions on one scale grade every run alike (`methodology.same_scale`), so a run's
+    Score under the new label is its Score under the old one. A same-scale publish still
+    re-scored every run from cached metrics or raw, which on ~40k runs took hours while the
+    crown and the ring read a half-graded version. Now the first ``SAME_SCALE_PROOF_RUNS``
+    runs that have a sibling row are scored the usual way and compared with it, field by
+    field. If every one matches, the rest are copied from the sibling (no metric work, no raw
+    read). If any differs (the sibling was graded under an older derivation, say), the copy
+    is off for the rest of the pass and every run is scored as before. Measured, not assumed.
+    """
+
+    def __init__(self, session, version: str, run_ids: list[int]) -> None:
+        from .methodology import METHODOLOGY_REGISTRY, latest_score, same_scale
+
+        self.version = version
+        self.siblings = [v for v in METHODOLOGY_REGISTRY if v != version and same_scale(v, version)]
+        self.rows: dict[int, Score] = {}
+        self.proven = 0
+        self.off_reason: str | None = None if self.siblings else "no same-scale version"
+        if self.siblings:
+            wanted = set(run_ids)
+            for row in session.scalars(
+                select(Score).where(Score.methodology_version.in_(self.siblings), latest_score())
+                .order_by(Score.computed_at)
+            ):
+                if row.run_id in wanted:
+                    self.rows[row.run_id] = row  # newest sibling row wins
+            if not self.rows:
+                self.off_reason = "no run has a same-scale score"
+
+    @property
+    def copying(self) -> bool:
+        return self.off_reason is None and self.proven >= SAME_SCALE_PROOF_RUNS
+
+    def can_copy(self, run_id: int) -> bool:
+        return self.copying and run_id in self.rows
+
+    def check(self, run_id: int, fresh) -> None:
+        """Compare a freshly scored run with its sibling row (while still proving)."""
+        if self.off_reason is not None or self.copying or run_id not in self.rows:
+            return
+        sib = self.rows[run_id]
+        for field in _CARRIED_FIELDS:
+            if not _same_value(getattr(fresh, field), getattr(sib, field)):
+                self.off_reason = (f"run {run_id}: {field} under {self.version} differs from "
+                                   f"{sib.methodology_version}")
+                log.info("Re-grade under %s: copying off (%s)", self.version, self.off_reason)
+                return
+        self.proven += 1
+
+    def copy(self, session, run_id: int):
+        from .methodology import upsert_score
+
+        sib = self.rows[run_id]
+        return upsert_score(session, run_id, self.version, is_at_measure=False,
+                            **{f: _copied(getattr(sib, f)) for f in _CARRIED_FIELDS})
+
+    def summary(self) -> dict:
+        return {"siblings": self.siblings, "proven": self.proven,
+                "copying": self.copying, "off_reason": self.off_reason}
+
+
+def _copied(value):
+    import copy
+
+    return copy.deepcopy(value)
+
+
+def _same_value(a, b, tol: float = 1e-6) -> bool:
+    """Equal JSON values, numbers within ``tol`` (a re-grade's floats are recomputed)."""
+    if isinstance(a, bool) or isinstance(b, bool):
+        return a == b
+    if isinstance(a, (int, float)) and isinstance(b, (int, float)):
+        return abs(float(a) - float(b)) <= tol
+    if isinstance(a, dict) and isinstance(b, dict):
+        return a.keys() == b.keys() and all(_same_value(a[k], b[k], tol) for k in a)
+    if isinstance(a, (list, tuple)) and isinstance(b, (list, tuple)):
+        return len(a) == len(b) and all(_same_value(x, y, tol) for x, y in zip(a, b))
+    if not a and not b:
+        return True  # None, {} and [] all mean "nothing here"
+    return a == b
+
+
 # Commit the re-grade in batches of this many runs (each run is savepoint-isolated), so a
 # long pass isn't bottlenecked on a per-run fsync while staying resumable.
 _REGRADE_COMMIT_EVERY = 100
@@ -986,7 +1079,8 @@ def score_history_under_current(session, progress=None) -> dict:
     log.info("Re-grade under %s: %d run(s) to visit, %d unscorable left out; ordered by %s",
              methodology.version, total, order["unscorable"], order["ordered_by"])
     counts = {"exact": 0, "partial": 0, "incomparable": 0, "scored": 0, "skipped": 0, "errors": 0,
-              "unscorable": order["unscorable"], "ordered_by": order["ordered_by"]}
+              "copied": 0, "unscorable": order["unscorable"], "ordered_by": order["ordered_by"]}
+    carry = SameScaleCarry(session, methodology.version, run_ids)
     # Commit in batches instead of once per run: a per-run commit fsyncs on every one of
     # (potentially thousands of) runs, which dominated the wall-clock. Each run is wrapped in
     # a SAVEPOINT so a single malformed run rolls back only itself, not the whole batch — so
@@ -994,8 +1088,14 @@ def score_history_under_current(session, progress=None) -> dict:
     for i, run_id in enumerate(run_ids):
         try:
             with session.begin_nested():  # per-run savepoint
-                run = session.get(Run, run_id)
-                score = score_run_under(session, run, methodology, artifact_base)
+                if carry.can_copy(run_id):
+                    score = carry.copy(session, run_id)
+                    counts["copied"] += 1
+                else:
+                    run = session.get(Run, run_id)
+                    score = score_run_under(session, run, methodology, artifact_base)
+                    if score is not None:
+                        carry.check(run_id, score)
                 if score is None:
                     counts["skipped"] += 1
                 else:
@@ -1023,7 +1123,7 @@ def score_history_under_current(session, progress=None) -> dict:
         crown_follower.poke()
     except Exception:  # noqa: BLE001 — a nudge must never fail the re-grade
         log.debug("Crown follower poke failed", exc_info=True)
-    return {"methodology": methodology.version, "total": total, **counts}
+    return {"methodology": methodology.version, "total": total, **counts, "same_scale": carry.summary()}
 
 
 def reconcile_interrupted_runs(*, now: datetime | None = None) -> int:
