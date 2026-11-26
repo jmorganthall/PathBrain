@@ -5285,7 +5285,7 @@ def ring_order(session) -> list[str]:
     return [fp for _k, fp in sorted(keyed, key=lambda kf: kf[0], reverse=True)]
 
 
-def latest_champion(session, max_age_days: int) -> dict | None:
+def latest_champion(session, max_age_days: int, rule: str | None = None) -> dict | None:
     """The winner the ring names over the whole ledger — the reigning duel champion — if
     fresh enough.
 
@@ -5315,7 +5315,9 @@ def latest_champion(session, max_age_days: int) -> dict | None:
     sessions_data = _ledger_sessions(session)
     ratings = fit_bradley_terry(_pair_record(sessions_data))
     duel_cfg = _duel_config(session)
-    rule = crown_rule(duel_cfg)
+    # ``rule`` names the crown rule to replay under (a methodology preview asks for its
+    # own); by default the ring's, which a ring-crowning methodology already sets.
+    rule = rule if rule in CROWN_RULES else crown_rule(duel_cfg)
     fp, belt, _why = belt_holder(sessions_data, ratings, rule, rank_sigma(duel_cfg))
     if fp is None:
         return None

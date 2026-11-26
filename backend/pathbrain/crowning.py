@@ -218,7 +218,7 @@ def _resolve_ring(session, pooled_best_fp: str | None, judged: Judgement) -> Map
 
     cfg = get_config(session)
     freshness = duel_mod.champion_freshness_days(cfg["duel"] if "duel" in cfg else None)
-    champion = duel_mod.latest_champion(session, max_age_days=freshness)
+    champion = duel_mod.latest_champion(session, max_age_days=freshness, rule=judged.ring_crown_rule)
     budget = speed_budget(None, judged)
     base = {"policy": RING_POLICY, "duel_champion": champion}
 
@@ -275,6 +275,20 @@ def _resolve_ring(session, pooled_best_fp: str | None, judged: Judgement) -> Map
                        "the budget either, so it stands"),
             "speed_budget": {**budget, "checked": True, "within": False, "judged_on": "ring",
                              "over": over.as_dict()["over"], "replaced": None}}
+
+
+def preview_ring(session, judged: Judgement) -> Mapping[str, object]:
+    """What the crown would be under ``judged`` if its version were current: the same
+    resolution (`_resolve_ring`) on today's ring, with the pooled crown as last observed as
+    the fresh-install stand-in, for the Crown agreement card before a publish. Read-only;
+    ``judged`` must crown by the ring."""
+    if judged.crowned_by != "ring":
+        raise ValueError(f"{judged.version} does not crown by the ring")
+    from .crown_follower import current_crown
+
+    pooled = current_crown(session)
+    pooled_fp = pooled["fingerprint"] if pooled and "fingerprint" in pooled else None
+    return _resolve_ring(session, pooled_fp, judged)
 
 
 def _ring_over_text(check) -> str:
@@ -452,6 +466,7 @@ def _resolve_policy(session, pooled_best_fp: str | None, policy: str) -> dict:
 __all__ = [
     "POLICIES",
     "RING_POLICY",
+    "preview_ring",
     "DEFAULT_POLICY",
     "RANKINGS",
     "RING_SOURCE",

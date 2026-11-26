@@ -41,7 +41,7 @@ def ring(monkeypatch, client):
         judged = _judged(s)
     state = {"judged": judged, "champion": None, "order": [], "sitting": None}
     monkeypatch.setattr(methodology, "current_judgement", lambda session: state["judged"])
-    monkeypatch.setattr(duel_mod, "latest_champion", lambda session, max_age_days: state["champion"])
+    monkeypatch.setattr(duel_mod, "latest_champion", lambda session, max_age_days, rule=None: state["champion"])
     monkeypatch.setattr(duel_mod, "ring_order", lambda session: list(state["order"]))
     monkeypatch.setattr(verdict, "crown_fingerprint", lambda session: state["sitting"])
     yield state
@@ -116,3 +116,45 @@ def test_ring_budget_needs_enough_rounds_and_clears_the_noise_rule(client):
     assert not checks["clear"].within
     assert checks["clear"].over[0].leg == "fcp" and checks["clear"].over[0].against == "x"
     assert checks["x"].within                 # the faster side of every pair
+
+
+V21 = "speed-smoothness-v21"
+
+
+def test_the_v21_candidate_crowns_by_the_ring_and_is_not_current():
+    """v21 is v20's rubric with a judgement block that hands the crown to the ring. Written,
+    not published: nothing re-crowns because it exists."""
+    spec = methodology.METHODOLOGY_REGISTRY[V21]
+    judged = methodology.judgement(V21, methodology.build_definition_from_spec(spec), {})
+    assert methodology.CURRENT_METHODOLOGY != V21
+    assert judged.source == "methodology" and judged.crowned_by == "ring"
+    assert judged.ring_crown_rule == "lineal" and judged.ring_min_margin == 0.0
+    assert judged.speed_budget == SpeedBudget(enabled=True, lcp_pct=20.0, fcp_pct=25.0)
+    assert judged.budget_judged_on == "ring" and judged.allow_unshaped_crown is False
+    assert methodology.same_scale(V21, "speed-smoothness-v20")
+
+
+def test_the_ring_preview_refuses_a_judgement_the_ring_does_not_crown_by():
+    with session_scope() as s:
+        cfg = get_config(s)
+        row = methodology.ensure_current_methodology(s, cfg)
+        today = methodology.judgement(row.version, row.definition or {}, cfg)
+        with pytest.raises(ValueError):
+            crowning.preview_ring(s, replace(today, crowned_by="pooled"))
+
+
+def test_crown_agreement_previews_who_v21_would_crown(ring):
+    """v20 against v21 grade every run alike, so the cold medians can only say "alike": the
+    card's verdict is who the ring would crown against the crown today."""
+    from pathbrain import crown_agreement
+
+    ring["champion"], ring["order"], ring["sitting"] = _champ("champ"), ["champ", "second"], "sitting"
+    with session_scope() as s:
+        out = crown_agreement.crown_agreement(s, get_config(s), a="speed-smoothness-v20", b=V21, min_runs=5)
+    assert out["ring"]["version"] == V21 and out["ring"]["fingerprint"] == "champ"
+    assert out["ring"]["current_crown"] == "sitting" and out["ring"]["verdict"] == "disagree"
+    assert (out["verdict"], out["text"]) == ("disagree", out["ring"]["text"])
+    ring["sitting"] = "champ"
+    with session_scope() as s:
+        out = crown_agreement.crown_agreement(s, get_config(s), a="speed-smoothness-v20", b=V21, min_runs=5)
+    assert out["ring"]["verdict"] == "agree" and "keep" in out["ring"]["text"]

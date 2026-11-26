@@ -20,10 +20,12 @@ or a pin, made elsewhere.
 from __future__ import annotations
 
 from collections import defaultdict
+from collections.abc import Mapping
 from statistics import median
 
 from sqlalchemy import and_, select
 
+from .methodology import judgement as methodology_judgement
 from .models import BenchmarkResult, Methodology, Run, RunStatus
 from .stats import spearman
 from .warm_agreement import AGREE_RHO, LIMIT, MIN_RUNS, crown_sources, overall_for
@@ -259,9 +261,57 @@ def crown_agreement(session, cfg: dict | None, *, a: str | None = None, b: str |
             # "alike": the difference is in how the ranking reads the record, so that is the verdict.
             out["verdict"] = out["read"]["verdict"]
             out["text"] = out["read"]["text"]
+    out["ring"] = None
+    for version, definition in ((b, b_def), (a, a_def)):
+        judged = methodology_judgement(version, definition, cfg or {})
+        if judged.crowned_by == "ring":
+            out["ring"] = ring_comparison(session, judged)
+            if same_scale(a, b):
+                # Same rubric: the cold medians can only say "alike", and the difference is
+                # who crowns, so that is the verdict.
+                out["verdict"], out["text"] = out["ring"]["verdict"], out["ring"]["text"]
+            break
     out["runs_compared"] = sum(len(v) for v in profiles.values())
     out["versions"] = registry_versions()
     return out
+
+
+def ring_comparison(session, judged) -> Mapping[str, object]:
+    """Who ``judged``'s version would crown today if it were current (the ring's champion
+    under its rules, `crowning.preview_ring`), against the crown the Verdict names now.
+    Read-only."""
+    from . import crowning, verdict
+
+    res = crowning.preview_ring(session, judged)
+    now = verdict.crown_fingerprint(session)
+    fp = res["fingerprint"]
+    from .profile_names import names_for
+
+    names = names_for(session, [f for f in (fp, now) if f])
+
+    def nm(f: str | None) -> str:
+        return (names[f] if f in names else None) or (f or "—")[:8]
+
+    sv = _short(judged.version)
+    if fp is None:
+        verdict_word, text = "insufficient", f"{sv} would crown nobody yet: {res['detail']}."
+    elif fp == now:
+        verdict_word = "agree"
+        text = f"{sv} would keep {nm(fp)} as the crown: {res['detail']}."
+    else:
+        verdict_word = "disagree"
+        text = (f"{sv} would crown {nm(fp)} instead of {nm(now)}: {res['detail']}. "
+                f"Switching to {sv} changes what Auto-apply follows.")
+    return {
+        "version": judged.version,
+        "fingerprint": fp,
+        "name": nm(fp) if fp else None,
+        "source": res["source"],
+        "detail": res["detail"],
+        "current_crown": now,
+        "verdict": verdict_word,
+        "text": text,
+    }
 
 
 _READ_WORDS = {
