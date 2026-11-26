@@ -461,11 +461,11 @@ def _do_check() -> dict:  # noqa: PLR0912, PLR0915 — one linear decision ladde
     # governing target — what an armed follower actually applies — is resolved by the
     # first-class crowning policy: "pooled" (default) or "duel" (the head-to-head
     # ladder's fresh champion, pooled fallback). One policy, one write path.
-    from . import crowning
+    from . import verdict
 
     with session_scope() as session:
-        governing = crowning.resolve(session, best_fp)
-    target_fp = governing.get("fingerprint") or best_fp
+        governing = verdict.current(session, best_fp)
+    target_fp = governing.fingerprint or best_fp
     target_profile = next(
         (p for p in field.get("profiles", []) if p.get("fingerprint") == target_fp), None
     )
@@ -475,21 +475,18 @@ def _do_check() -> dict:  # noqa: PLR0912, PLR0915 — one linear decision ladde
         # apply. Fall back to the pooled crown, and **say pooled**: reporting a duel
         # verdict while writing a profile the duel did not pick is the worst of both, and
         # it is invisible precisely when it matters (the status still reads "duel").
-        governing = {
-            **governing,
-            "source": "pooled",
-            "detail": (
-                f"the {governing['source']} crown is not in the measured field "
-                "(no comparable runs) — falling back to the pooled crown"
-            ),
-        }
+        governing = governing.fallen_back(
+            best_fp, "pooled",
+            f"the {governing.source} crown is not in the measured field "
+            "(no comparable runs) — falling back to the pooled crown",
+        )
         target_fp, target_profile = best_fp, best
-    result["policy"] = governing["policy"]
+    result["policy"] = governing.policy
     result["governing_fingerprint"] = target_fp
     result["governing_label"] = target_profile.get("label")
-    result["governing_source"] = governing["source"]
-    result["governing_detail"] = governing["detail"]
-    result["duel_champion"] = governing.get("duel_champion")
+    result["governing_source"] = governing.source
+    result["governing_detail"] = governing.detail
+    result["duel_champion"] = dict(governing.duel_champion) if governing.duel_champion else None
 
     # Where is the firewall right now? Best-effort; a discovery failure only skips the
     # follow half (tracking still records the change).
@@ -560,7 +557,7 @@ def _do_check() -> dict:  # noqa: PLR0912, PLR0915 — one linear decision ladde
                         applied = True
                         log.info(
                             "Crown follower applied %s crown %s (%s change(s))",
-                            governing["source"],
+                            governing.source,
                             target_fp,
                             len(pending),
                         )
@@ -593,7 +590,7 @@ def _do_check() -> dict:  # noqa: PLR0912, PLR0915 — one linear decision ladde
     crown_applied = applied and target_fp == best_fp
     recorded_by_change = changed and crown_applied
     crown_detail = (
-        f"followed the {governing['source']} crown instead ({len(pending)} change(s) written)"
+        f"followed the {governing.source} crown instead ({len(pending)} change(s) written)"
         if applied and not crown_applied
         else detail
     )
@@ -625,7 +622,7 @@ def _do_check() -> dict:  # noqa: PLR0912, PLR0915 — one linear decision ladde
                         overall=float(overall) if overall is not None else None,
                         applied=applied,
                         error=apply_error,
-                        detail=f"[{governing['source']}] {detail}" if detail else detail,
+                        detail=f"[{governing.source}] {detail}" if detail else detail,
                     )
                 )
     except Exception:  # noqa: BLE001 — a ledger write must never fail the check
