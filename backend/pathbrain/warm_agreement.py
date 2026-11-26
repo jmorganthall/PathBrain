@@ -221,9 +221,9 @@ def warm_agreement(session, cfg: dict | None, *, min_runs: int = MIN_RUNS, limit
     except Exception:  # noqa: BLE001 — naming is never why the audit fails
         names = {}
     try:
-        from . import crown_follower
+        from . import verdict
 
-        crown_fp = ((crown_follower.current_crown(session) or {}).get("fingerprint"))
+        crown_fp = verdict.crown_fingerprint(session)
     except Exception:  # noqa: BLE001
         crown_fp = None
     out = assess(profiles, definition=definition, sources=sources, min_runs=max(2, int(min_runs)), crown_fp=crown_fp, names=names)

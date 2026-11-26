@@ -1,6 +1,6 @@
 {
   "crown-resolved-outside-verdict": 0,
-  "crown-judged-by-a-reader": 9,
+  "crown-judged-by-a-reader": 11,
   "crown-promoted-outside-auto-apply": 27,
   "frontend-crown-outside-verdict": 15,
   "shape-outside-domain": 50,
@@ -9,6 +9,6 @@
   "untyped-json-column": 68,
   "nullable-without-meaning": 184,
   "runtime-ddl": 7,
-  "defensive-read": 3588,
+  "defensive-read": 3585,
   "untyped-frontend": 0
 }

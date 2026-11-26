@@ -37,6 +37,7 @@ import Typography from "@mui/material/Typography";
 import CheckCircleIcon from "@mui/icons-material/CheckCircle";
 import EmojiEventsIcon from "@mui/icons-material/EmojiEvents";
 
+import { useVerdict } from "../../hooks/useVerdict";
 import { api } from "../../api/client";
 import FastestGapLine from "../FastestGapLine";
 import type { OverallOut, OverallProfile } from "../../api/types";
@@ -63,6 +64,9 @@ function TiedChip({ p }: { p: OverallProfile }) {
 
 export default function VerdictCard() {
   const [data, setData] = useState<OverallOut | null>(null);
+  // The crown the Verdict names. When it is not the fused #1 (the speed budget or the
+  // policy named another), the card says which profile Auto-apply actually runs.
+  const crownNow = useVerdict();
 
   const load = useCallback(async () => {
     try {
@@ -105,6 +109,9 @@ export default function VerdictCard() {
   }
 
   const onIt = data.on_firewall === true;
+  const crownFp = crownNow?.fingerprint ?? null;
+  const fusedIsCrown = crownFp != null && crownFp === best.fingerprint;
+  const crownRow = crownFp ? data.profiles.find((p) => p.fingerprint === crownFp) ?? null : null;
   // The named profile against the field's fastest FCP and LCP — read off whichever corner
   // names the same profile (the fused one, normally), so the price of the verdict sits
   // directly under it.
@@ -121,7 +128,7 @@ export default function VerdictCard() {
             <EmojiEventsIcon sx={{ color: "warning.main", fontSize: 40, flexShrink: 0 }} />
             <Box sx={{ minWidth: 0 }}>
               <Typography variant="overline" color="text.secondary" sx={{ lineHeight: 1.4 }}>
-                Run this profile
+                {crownFp == null || fusedIsCrown ? "Run this profile" : "Best on the fused Overall"}
               </Typography>
               <Typography variant="h5" sx={{ lineHeight: 1.2 }}>
                 <Box
@@ -138,6 +145,15 @@ export default function VerdictCard() {
                 {best.rounds ? ` + ${best.rounds} ring round${best.rounds === 1 ? "" : "s"}` : ", never fought in the ring"}
               </Typography>
               <FastestGapLine gaps={bestCorner?.vs_fastest} fastest={corners.fastest} />
+              {crownNow && crownFp && !fusedIsCrown && (
+                <Typography variant="caption" color="warning.main" sx={{ display: "block" }}>
+                  The crown Auto-apply follows is{" "}
+                  <Box component={RouterLink} to={`/profiles/${encodeURIComponent(crownFp)}`} sx={{ color: "inherit" }}>
+                    {crownRow ? nameOf(crownRow) : crownFp.slice(0, 8)}
+                  </Box>
+                  : {crownNow.detail}
+                </Typography>
+              )}
               {data.speed_budget?.within === false && (
                 <Typography variant="caption" color="warning.main" sx={{ display: "block" }}>
                   Over the speed budget (

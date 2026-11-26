@@ -143,3 +143,42 @@ def test_a_crown_check_writes_the_verdict_history(monkeypatch):
         assert hist and hist[0]["fingerprint"] == "fpfollow0001" and hist[0]["source"] == "pooled"
     finally:
         _clear_history()
+
+
+def test_the_sitting_crown_reads_the_verdict_and_falls_back_to_the_pooled_ledger():
+    """`verdict.crown` is what Why, Away and the agreement audits ask for the crown: the
+    Verdict's newest answer, with the pooled ledger standing in only while that is empty."""
+    from pathbrain.models import CrownEvent
+
+    _clear_history()
+    try:
+        with session_scope() as s:
+            s.query(CrownEvent).delete()
+            s.add(CrownEvent(kind="change", fingerprint="fppooled0001", label="pooled label"))
+            s.add(CrownEvent(kind="change", fingerprint="fpcrown00001", label="crown label"))
+            s.add(CrownEvent(kind="change", fingerprint="fppooled0001", label="pooled label"))
+            s.commit()
+            before = verdict.crown(s)
+            assert (before.fingerprint, before.basis) == ("fppooled0001", "pooled")
+            verdict.record(s, verdict.Verdict.from_resolution(_resolution()), "speed-smoothness-v19")
+            s.commit()
+            after = verdict.crown(s)
+            assert (after.fingerprint, after.label, after.basis) == ("fpcrown00001", "crown label", "verdict")
+            assert after.since and after.since.endswith("+00:00")
+            assert verdict.crown_fingerprint(s) == "fpcrown00001"
+    finally:
+        _clear_history()
+        with session_scope() as s:
+            s.query(CrownEvent).delete()
+
+
+def test_no_reader_outside_the_chain_reads_the_pooled_ledger_for_the_crown():
+    """The pooled ledger's newest row is evidence; Why, Away and the agreement audits name
+    the Verdict's crown (`verdict.crown`)."""
+    import pathlib
+
+    root = pathlib.Path(__file__).resolve().parents[1] / "pathbrain"
+    readers = ["why.py", "portable.py", "crown_agreement.py", "warm_agreement.py",
+               "api/routes_portable.py", "api/routes_verdict.py"]
+    for rel in readers:
+        assert "current_crown(" not in (root / rel).read_text(), rel
