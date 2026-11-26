@@ -25,6 +25,13 @@ def overall(
             "Auto-apply and the ring follow the published methodology."
         ),
     ),
+    budget: bool | None = Query(
+        None,
+        description=(
+            "Preview the ranking with the crown kept within the speed budget (`true`, v20's "
+            "rule) or not (`false`). A preview only, like `read`."
+        ),
+    ),
 ) -> dict:
     """The fused ranking: every profile's Overall fitted from its pooled median AND every
     head-to-head round it fought, with an error bar from both; the crown it names; the
@@ -32,7 +39,7 @@ def overall(
     well each verdict predicted past nights. Read-only, and there is nothing to set: the
     pooled slack is measured from the ledger, never chosen."""
     with profile_aggregates.request_memo():
-        return overall_ranking.ranking(session, backtest=backtest, read=read)
+        return overall_ranking.ranking(session, backtest=backtest, read=read, budget=budget)
 
 
 @router.get("/overall/ring-target")

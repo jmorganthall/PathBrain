@@ -76,6 +76,16 @@ def budget_check(session, fingerprint: str | None, budget: dict | None = None) -
     and "cannot tell" never refuses a crown."""
     if not fingerprint:
         return None
+    return budget_checks(session, [fingerprint], budget).get(fingerprint)
+
+
+def budget_checks(session, fingerprints, budget: dict | None = None) -> dict[str, dict | None]:
+    """`budget_check` for many profiles at once, reading the field's fastest legs once.
+    ``{fingerprint: check or None}``; the crown under a methodology that keeps it within the
+    budget (`methodology.crown_within_speed_budget`) and Auto-apply read the same answer."""
+    fps = [fp for fp in dict.fromkeys(fingerprints or []) if fp]
+    if not fps:
+        return {}
     from .methodology import ensure_current_methodology
     from .pooled_field import fastest_legs, leg_gaps
 
@@ -85,19 +95,24 @@ def budget_check(session, fingerprint: str | None, budget: dict | None = None) -
         version = ensure_current_methodology(session, cfg).version
         min_iter = int((cfg.get("correlation") or {}).get("min_iterations") or 15)
         fastest = fastest_legs(session, version, min_iter)
-        gaps = leg_gaps(session, version, fastest, [fingerprint]).get(fingerprint)
+        all_gaps = leg_gaps(session, version, fastest, fps) if fastest else {}
     except Exception:  # noqa: BLE001 — a reading, never a reason the follower stops
         log.warning("Crowning: the speed budget could not be read", exc_info=True)
-        return None
-    if not gaps:
-        return None
-    over = []
-    for leg in ("lcp", "fcp"):
-        g = gaps.get(leg)
-        limit = budget[f"{leg}_pct"]
-        if g and g.get("clear") and g["pct"] > limit:
-            over.append({"leg": leg, "pct": g["pct"], "limit_pct": limit, "delta_ms": g["delta_ms"]})
-    return {"within": not over, "over": over, "gaps": gaps}
+        return {fp: None for fp in fps}
+    out: dict[str, dict | None] = {}
+    for fp in fps:
+        gaps = all_gaps.get(fp)
+        if not gaps:
+            out[fp] = None
+            continue
+        over = []
+        for leg in ("lcp", "fcp"):
+            g = gaps.get(leg)
+            limit = budget[f"{leg}_pct"]
+            if g and g.get("clear") and g["pct"] > limit:
+                over.append({"leg": leg, "pct": g["pct"], "limit_pct": limit, "delta_ms": g["delta_ms"]})
+        out[fp] = {"within": not over, "over": over, "gaps": gaps}
+    return out
 
 
 def _over_text(check: dict) -> str:
@@ -342,6 +357,7 @@ __all__ = [
     "resolve",
     "speed_budget",
     "budget_check",
+    "budget_checks",
     "DEFAULT_SPEED_BUDGET",
 ]
 

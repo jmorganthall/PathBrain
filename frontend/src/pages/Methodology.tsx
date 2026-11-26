@@ -545,7 +545,8 @@ export default function Methodology() {
                     if (cand && !window.confirm(
                       `Switch to ${v}? History re-grades under it, and the crown, Auto-apply and the ` +
                       `standings follow it from then on.` +
-                      (cand.pooled_read === "epochs" ? " It ranks each profile's runs per instrument era, on today's scale." : ""),
+                      (cand.pooled_read === "epochs" ? " It ranks each profile's runs per instrument era, on today's scale." : "") +
+                      (cand.crown_within_speed_budget ? " The crown only goes to a profile within the speed budget, so it is the profile Auto-apply follows." : ""),
                     )) return;
                     handleSetCurrent(v);
                   }}
@@ -560,7 +561,8 @@ export default function Methodology() {
                   ))}
                   {candidates.map((c) => (
                     <MenuItem key={c.version} value={c.version}>
-                      {c.version} · candidate{c.pooled_read === "epochs" ? " (reads per era)" : ""}
+                      {c.version} · candidate
+                      {c.pooled_read === "epochs" ? " (reads per era" + (c.crown_within_speed_budget ? ", crown within speed budget)" : ")") : ""}
                     </MenuItem>
                   ))}
                 </TextField>

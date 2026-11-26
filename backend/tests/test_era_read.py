@@ -96,7 +96,7 @@ def test_a_failed_era_fit_falls_back_to_the_whole_record_and_says_so(client, mon
 def test_the_crown_agreement_card_compares_the_reads(client, monkeypatch):
     """v17 vs v19 grade alike, so the cold-median audit can only say "alike"; the card reports
     the two reads' rankings instead."""
-    def fake_ranking(_session, *, backtest=True, live=True, read=None):
+    def fake_ranking(_session, *, backtest=True, live=True, read=None, budget=None):
         rows = [{"fingerprint": fp, "name": fp.upper(), "eligible": True} for fp in
                 (["old", "new", "mid"] if read == "all" else ["new", "mid", "old"])]
         return {"best": {**rows[0], "fused": 25.0}, "profiles": rows, "lead": 0.3,

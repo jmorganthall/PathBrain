@@ -901,6 +901,36 @@ METHODOLOGY_REGISTRY: dict[str, dict] = {
         "ranking": {"pooled_read": "epochs"},
         "same_scale_as": "speed-smoothness-v17",
     },
+    # A CANDIDATE, like v19: v19 exactly, plus one rule on what the crown may be. Before it,
+    # the crown went to the fused #1 however slow it was, and the speed budget only told
+    # Auto-apply to follow something else — two names for "the best", one of them far slower.
+    "speed-smoothness-v20": {
+        "derivation_version": DERIVATION_VERSION,  # rubric unchanged — re-grade, never re-derive
+        "notes": (
+            "CANDIDATE — v19, with the crown kept within the speed budget. Under v19 the crown is "
+            "the fused #1 whatever its speed, and the speed budget (Settings → Auto-apply) only "
+            "makes Auto-apply follow a different crown when that #1 is clearly slower than the "
+            "field's fastest LCP or FCP by more than the budget allows. So the dashboard could "
+            "crown one profile while the firewall ran another. Under v20 a profile over the "
+            "budget is not eligible for the crown at all: the crown is the best fused Overall "
+            "among profiles within it, which is the profile Auto-apply follows. The budget's "
+            "percentages stay one setting (crown_follow.speed_budget), read by both. 'Cannot "
+            "tell' never refuses a crown, and if no eligible profile is within the budget the "
+            "fused #1 stands, as Auto-apply already did. Same rubric and per-era read as v19, so "
+            "the ring's v17 rounds carry over (same_scale_as)."
+        ),
+        "axes": _SS_V4_AXES,
+        "assignments": _ss_v17_assignments(),
+        "overall": {
+            "method": "weighted",
+            "metrics": ["fcp", "lcp", "cadence_cov"],
+            "required": ["fcp", "lcp", "cadence_cov"],
+            "weights": {"fcp": 1.0, "lcp": 1.0, "cadence_cov": 1.0},
+        },
+        "verdict_rules": dict(_VERDICT_RULES_V17),
+        "ranking": {"pooled_read": "epochs", "crown_within_speed_budget": True},
+        "same_scale_as": "speed-smoothness-v17",
+    },
 }
 
 
@@ -908,6 +938,10 @@ METHODOLOGY_REGISTRY: dict[str, dict] = {
 #: record, every version before v19) or ``epochs`` (one median per instrument era, each put
 #: on the newest era's scale). A property of the methodology, so switching it is a publish.
 POOLED_READS = ("all", "epochs")
+#: What a methodology's ``ranking`` block may say: how the pooled record is read
+#: (`pooled_read`) and whether the crown must sit within the speed budget
+#: (`crown_within_speed_budget`, v20+).
+RANKING_KEYS = ("pooled_read", "crown_within_speed_budget")
 #: The spec keys that change how a version's numbers are *read*, not what they are. Two
 #: versions that differ only here grade every run alike (`same_scale`).
 READ_ONLY_KEYS = ("ranking", "notes", "same_scale_as", "derivation_version")
@@ -925,6 +959,7 @@ for _ver, _spec in METHODOLOGY_REGISTRY.items():
     _b = {k: v for k, v in METHODOLOGY_REGISTRY[_same].items() if k not in READ_ONLY_KEYS}
     assert _a == _b, f"methodology {_ver}: same_scale_as {_same}, but the rubrics differ"
     assert (_spec.get("ranking") or {}).get("pooled_read", "all") in POOLED_READS
+    assert set(_spec.get("ranking") or {}) <= set(RANKING_KEYS), f"methodology {_ver}: unknown ranking key"
 
 
 # Invariant: every Overall/crown metric a version *requires* must be a scored metric in
@@ -1375,6 +1410,14 @@ def pooled_read(definition: dict | None) -> str:
     instrument era, on the newest era's scale). The one accessor; a fork copies it."""
     read = str(((definition or {}).get("ranking") or {}).get("pooled_read") or "all")
     return read if read in POOLED_READS else "all"
+
+
+def crown_within_speed_budget(definition: dict | None) -> bool:
+    """Whether this methodology keeps the crown within the speed budget (v20+): a profile
+    clearly slower than the field's fastest LCP or FCP by more than the budget allows is not
+    eligible for the crown, so the crown and the profile Auto-apply follows are one. False
+    for every version before v20. The one accessor; a fork copies it."""
+    return bool(((definition or {}).get("ranking") or {}).get("crown_within_speed_budget"))
 
 
 def scale_of(version: str | None) -> str | None:

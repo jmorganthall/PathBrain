@@ -1528,6 +1528,7 @@ export interface MethodologyCandidate {
   notes: string;
   pooled_read: "all" | "epochs";
   same_scale_as: string | null;
+  crown_within_speed_budget?: boolean;
 }
 
 export type Comparability = "exact" | "partial" | "incomparable";
@@ -1843,6 +1844,17 @@ export interface SpeedBudgetCheck extends SpeedBudget {
   within?: boolean;
   over?: { leg: "lcp" | "fcp"; pct: number; limit_pct: number; delta_ms: number }[];
   replaced?: { fingerprint: string; source: string } | null;
+}
+
+// The crown rule of a methodology that keeps it within the speed budget (v20).
+export interface CrownBudget extends SpeedBudget {
+  applied: boolean;
+  none_within: boolean;
+  passed_over: {
+    fingerprint: string;
+    name: string | null;
+    over: { leg: "lcp" | "fcp"; pct: number; limit_pct: number; delta_ms: number }[];
+  }[];
 }
 
 export interface LegGap {
@@ -4731,6 +4743,10 @@ export interface OverallOut {
   pooled_read?: "all" | "epochs";
   published_read?: "all" | "epochs";
   preview?: boolean;
+  // v20: the crown is kept within the speed budget; who was passed over for it.
+  crown_within_budget?: boolean;
+  published_crown_within_budget?: boolean;
+  crown_budget?: CrownBudget | null;
   eras?: OverallEras | null;
   min_iterations: number;
   tie_sigma: number;
