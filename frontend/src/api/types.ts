@@ -4101,11 +4101,24 @@ export interface CrownAgreementRead {
   profiles: number;
 }
 
+export interface CrownAgreementRing {
+  version: string;
+  fingerprint: string | null;
+  name: string | null;
+  source: string;
+  detail: string;
+  current_crown: string | null;
+  verdict: "insufficient" | "agree" | "disagree";
+  text: string;
+}
+
 export interface CrownAgreement {
   verdict: "insufficient" | "agree" | "same_top" | "disagree";
   text: string;
   // Set when the two versions read the pooled record differently (v17 vs v19).
   read?: CrownAgreementRead | null;
+  // Set when either version's crown is decided by the ring (v21): who it would crown today.
+  ring?: CrownAgreementRing | null;
   rho: number | null;
   profiles: number;
   thin_profiles: number;

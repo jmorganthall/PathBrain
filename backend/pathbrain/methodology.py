@@ -933,6 +933,46 @@ METHODOLOGY_REGISTRY: dict[str, dict] = {
         "ranking": {"pooled_read": "epochs", "crown_within_speed_budget": True},
         "same_scale_as": "speed-smoothness-v17",
     },
+    # A CANDIDATE: v20's rubric and read, plus the judgement block, so every number that
+    # decides the crown is the methodology's and the overnight ring decides it (one chain).
+    "speed-smoothness-v21": {
+        "derivation_version": DERIVATION_VERSION,  # rubric unchanged — re-grade, never re-derive
+        "notes": (
+            "CANDIDATE — the ring decides the crown. Under v20 and earlier a crowning policy "
+            "picked the crown from the pooled or fused record, a speed budget judged on pooled "
+            "medians could hand it to a different definition of best, and the numbers behind "
+            "both were settings. v21 states them all (judgement): the crown is the overnight "
+            "ring's lineal champion, a win is a win (no extra margin), and the speed budget "
+            "(LCP 20%, FCP 25%) is judged on raw milliseconds measured back to back in the "
+            "ring. A champion clearly over it passes the crown to the next profile in the "
+            "ring's standings. SQM off races in the ring but may not hold the crown. Same "
+            "rubric and per-era read as v20, so the ring's v17 rounds carry over "
+            "(same_scale_as). Compare it with the current version on the Crown agreement "
+            "card before switching."
+        ),
+        "axes": _SS_V4_AXES,
+        "assignments": _ss_v17_assignments(),
+        "overall": {
+            "method": "weighted",
+            "metrics": ["fcp", "lcp", "cadence_cov"],
+            "required": ["fcp", "lcp", "cadence_cov"],
+            "weights": {"fcp": 1.0, "lcp": 1.0, "cadence_cov": 1.0},
+        },
+        "verdict_rules": dict(_VERDICT_RULES_V17),
+        "ranking": {"pooled_read": "epochs", "crown_within_speed_budget": True},
+        "judgement": {
+            "crowned_by": "ring",
+            "ring_crown_rule": "lineal",
+            "ring_min_margin": 0.0,
+            "tie_sigma": 2.0,
+            "tie_min_margin": 0.5,
+            "min_ring_rounds": 8,
+            "speed_budget": {"enabled": True, "lcp_pct": 20.0, "fcp_pct": 25.0},
+            "budget_judged_on": "ring",
+            "allow_unshaped_crown": False,
+        },
+        "same_scale_as": "speed-smoothness-v17",
+    },
 }
 
 
@@ -1147,6 +1187,8 @@ def build_definition_from_spec(spec: dict) -> dict:
         definition["overall"] = spec["overall"]
     if spec.get("ranking"):  # how the ranking reads the record (v19+); absent = "all"
         definition["ranking"] = copy.deepcopy(spec["ranking"])
+    if "judgement" in spec:  # who decides the crown, with every number (v21+); absent = settings
+        definition["judgement"] = copy.deepcopy(spec["judgement"])
     return definition
 
 
