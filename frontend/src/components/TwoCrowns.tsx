@@ -175,7 +175,7 @@ export default function TwoCrowns() {
           sx={{ mb: 1 }}
         >
           <Box>
-            <Typography variant="h6">Two ways of naming a winner</Typography>
+            <Typography variant="h6">Evidence · two ways of naming a winner</Typography>
             <Typography variant="caption" color="text.secondary">
               The all-history average and the head-to-head duels can disagree.{" "}
               {governing.source === "fused"

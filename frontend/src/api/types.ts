@@ -1950,6 +1950,9 @@ export interface CrownCheckResult {
 
 // Crown-churn statistics: how often the crowned best profile changes.
 export interface CrownFollowStats {
+  // Which history the churn is counted on: the Verdict's own (once it has one) or, until
+  // then, the older pooled crown ledger.
+  basis?: "verdict" | "pooled";
   tracked_since: string | null;
   total_changes: number;
   changes_24h: number;
@@ -1964,6 +1967,41 @@ export interface CrownFollowStats {
   current_reign_hours: number | null;
   mean_reign_hours: number | null;
   median_reign_hours: number | null;
+}
+
+// ── The Verdict (GET /verdict) ───────────────────────────────────────────────────────
+// The one answer to "which profile is the crown": the profile Auto-apply follows, who named
+// it and why. Every view that marks a crown reads this, never a field of its own.
+export interface VerdictNow {
+  policy: string;
+  fingerprint: string | null;
+  source: string;
+  detail: string;
+  duel_champion: DuelChampion | null;
+  speed_budget: Record<string, unknown> | null;
+  // The other judges' crowns read on the way (evidence, never acted on).
+  fused?: unknown;
+  math?: unknown;
+  lcp_first?: unknown;
+  fcp_first?: unknown;
+}
+
+// One past answer; a row is written only when the crown, its judge or the policy changed.
+export interface VerdictHistoryEntry {
+  decided_at: string | null;
+  fingerprint: string | null;
+  previous_fingerprint: string | null;
+  source: string;
+  policy: string;
+  detail: string;
+  methodology_version: string | null;
+  speed_budget: Record<string, unknown> | null;
+  evidence: Record<string, unknown> | null;
+}
+
+export interface VerdictOut {
+  verdict: VerdictNow;
+  history: VerdictHistoryEntry[];
 }
 
 // One crown-ledger row: a crown change, or a follower firewall apply.

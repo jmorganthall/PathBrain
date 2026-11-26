@@ -48,6 +48,7 @@ import type {
   DuelWeatherDistance,
   DuelStandings,
   CrownsOut,
+  VerdictOut,
   AiConfig,
   AiModel,
   AiStreamEvent,
@@ -543,6 +544,9 @@ export const api = {
   // `backtest` off skips the held-out predictive check for a quicker read (the Dashboard card).
   overall: (opts?: { backtest?: boolean }) =>
     request<OverallOut>(`/overall${opts?.backtest === false ? "?backtest=false" : ""}`),
+
+  // The Verdict: the crown Auto-apply follows, who named it and why, and its history.
+  verdict: (history = 20) => request<VerdictOut>(`/verdict?history=${history}`),
 
   // Crown follower ("Follow best"): status + churn stats, config toggle, and a manual sync.
   crowns: () => request<CrownsOut>("/settings/crowns"),
