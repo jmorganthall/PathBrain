@@ -671,7 +671,10 @@ export default function Settings() {
   const [activeTest, setActiveTest] = useState<ProfileTest | null>(null);
   // The crowned "best" profile (closest to the top-right corner) + the selectable
   // numeric fields, both from the server.
+  // The crown as the Verdict names it (the profile Auto-apply follows), and why. Every
+  // crown mark on this page reads it; the per-metric #1s are "fastest on this metric".
   const [bestFingerprint, setBestFingerprint] = useState<string | null>(null);
+  const [crownWhy, setCrownWhy] = useState<string | null>(null);
   // Profiles statistically tied with the crown (within run-to-run noise). Flagged "tied"
   // so a co-leader isn't mistaken for decisively behind the crown.
   const [coLeaders, setCoLeaders] = useState<Set<string>>(new Set());
@@ -843,11 +846,18 @@ export default function Settings() {
   }, []);
 
   const sortedProfiles = useMemo(
-    () =>
-      visibleProfiles
-        ? [...visibleProfiles].sort((a, b) => compareProfiles(a, b, orderBy, order))
-        : visibleProfiles,
-    [visibleProfiles, orderBy, order]
+    () => {
+      if (!visibleProfiles) return visibleProfiles;
+      const sorted = [...visibleProfiles].sort((a, b) => compareProfiles(a, b, orderBy, order));
+      // Under the default order the crown leads, wherever the field's ordering puts it: row 1
+      // is the profile Auto-apply follows.
+      if (orderBy === "primary" && order === "asc" && bestFingerprint) {
+        const i = sorted.findIndex((p) => p.fingerprint === bestFingerprint);
+        if (i > 0) sorted.unshift(...sorted.splice(i, 1));
+      }
+      return sorted;
+    },
+    [visibleProfiles, orderBy, order, bestFingerprint]
   );
 
   // Paginate the (sorted) profiles table — 25/page by default. Sorting + the column
@@ -875,7 +885,13 @@ export default function Settings() {
       setProfiles(p.profiles);
       setBestDiff(p.best_diff);
       setMinIterations(p.min_iterations);
-      setBestFingerprint(p.best_fingerprint);
+      api
+        .verdict(1)
+        .then((v) => {
+          setBestFingerprint(v.verdict.fingerprint);
+          setCrownWhy(v.verdict.detail);
+        })
+        .catch(() => {});
       setOverallMetrics(p.overall_metrics ?? []);
       setCoLeaders(new Set(p.co_leaders ?? []));
       setCurrentFingerprint(p.current_fingerprint);
@@ -978,7 +994,10 @@ export default function Settings() {
   // standing is stable across pagination/sorting.
   const rankings = useMemo(
     () =>
-      Object.fromEntries(rankedMetrics.map((m) => [m.key, rankByMetric(profiles ?? [], m.key)])),
+      // Confident profiles only: a thin profile's lucky handful of runs is not "fastest".
+      Object.fromEntries(
+        rankedMetrics.map((m) => [m.key, rankByMetric((profiles ?? []).filter((p) => p.confident), m.key)]),
+      ),
     [profiles, rankedMetrics],
   );
 
@@ -2065,21 +2084,15 @@ export default function Settings() {
                           )}
                           {p.fingerprint === bestFingerprint && (
                             <Tooltip
-                              title={
-                                `The crown: the highest Overall${
-                                  p.overall != null ? ` (${p.overall})` : ""
-                                } among profiles that meet the iteration minimum — the winner wins, by any margin${
-                                  coLeaders.size > 0
-                                    ? ". One or more profiles are within run-to-run noise of it (see the 'tied' chips) — that's informational; it doesn't change who's crowned"
-                                    : ""
-                                }.`
-                              }
+                              title={`The crown: the profile the Verdict names and Auto-apply follows.${
+                                crownWhy ? ` ${crownWhy}` : ""
+                              }`}
                             >
-                              <Chip size="small" color="success" label="best" />
+                              <Chip size="small" color="success" label="crown" />
                             </Tooltip>
                           )}
                           {p.fingerprint !== bestFingerprint && coLeaders.has(p.fingerprint) && (
-                            <Tooltip title="Within run-to-run noise of the crown: this profile's Overall is close enough to the best that the gap is a photo finish. Informational only — the crown still follows the highest Overall.">
+                            <Tooltip title="Within run-to-run noise of the pooled #1: the gap in pooled Overall is a photo finish. Informational only — it does not move the crown.">
                               <Chip size="small" variant="outlined" color="info" label="tied" />
                             </Tooltip>
                           )}
@@ -2139,12 +2152,18 @@ export default function Settings() {
                                       rawMetric != null ? ` (${fmtNumField(rawMetric, unit)})` : ""
                                     } — no spread, so it can't rank anything and isn't discriminating the crown on this data.`
                                   : rank == null
-                                    ? "No score yet"
+                                    ? p.confident
+                                      ? "No score yet"
+                                      : `Not ranked until confident (${minIterations} iterations)`
                                     : m.metricKey
                                       ? `${m.label}: ${raw}th percentile${
                                           rawMetric != null ? ` (raw ${fmtNumField(rawMetric, unit)})` : ""
-                                        } · rank ${rank} of ${rk.total} · a raw-measurement corner input to Overall`
-                                      : `${m.label} ${raw} · rank ${rank} of ${rk.total}`
+                                        } · rank ${rank} of ${rk.total} confident${
+                                          rank === 1 ? " · fastest on this metric" : ""
+                                        } · a raw-measurement corner input to Overall`
+                                      : `${m.label} ${raw} · rank ${rank} of ${rk.total} confident${
+                                          rank === 1 ? " · highest on this measure, not the crown" : ""
+                                        }`
                               }
                             >
                               <Typography
@@ -2428,7 +2447,7 @@ export default function Settings() {
                         sx={{ overflowWrap: "anywhere" }}
                       >
                         {sp.name || sp.label}
-                        {sp.fingerprint === bestFingerprint ? " · best" : ""}
+                        {sp.fingerprint === bestFingerprint ? " · crown" : ""}
                         {sp.fingerprint !== bestFingerprint && coLeaders.has(sp.fingerprint)
                           ? " · tied"
                           : ""}
