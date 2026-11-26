@@ -69,3 +69,77 @@ def test_the_crowns_card_still_serves_the_governing_verdict():
     assert r.status_code == 200, r.text[:500]
     governing = r.json()["governing"]
     assert {"source", "fingerprint", "detail", "speed_budget"} <= set(governing)
+
+
+# ── the verdict history (S5) ──────────────────────────────────────────────────────────
+
+
+def _clear_history():
+    from pathbrain.models import VerdictRecord
+
+    with session_scope() as s:
+        s.query(VerdictRecord).delete()
+
+
+def test_the_history_records_each_new_answer_once():
+    _clear_history()
+    a = verdict.Verdict.from_resolution(_resolution())
+    a_again = verdict.Verdict.from_resolution(_resolution(detail="same crown, new margin"))
+    b = a.fallen_back("fppooled0001", "pooled", "not in the measured field")
+    try:
+        with session_scope() as s:
+            assert verdict.record(s, a, "speed-smoothness-v19") is not None
+            s.commit()
+            assert verdict.record(s, a_again) is None  # a new detail alone is not a new answer
+            row = verdict.record(s, b, "speed-smoothness-v19")
+            s.commit()
+            assert row.previous_fingerprint == "fpcrown00001"
+            hist = verdict.history(s)
+        assert [h["fingerprint"] for h in hist] == ["fppooled0001", "fpcrown00001"]
+        assert hist[1]["evidence"] == {"fused": "fpcrown00001"}
+        assert hist[0]["source"] == "pooled" and hist[0]["methodology_version"] == "speed-smoothness-v19"
+    finally:
+        _clear_history()
+
+
+def test_the_verdict_endpoint_serves_the_answer_and_its_history():
+    from fastapi.testclient import TestClient
+
+    from pathbrain.main import app
+
+    _clear_history()
+    try:
+        with session_scope() as s:
+            verdict.record(s, verdict.Verdict.from_resolution(_resolution()))
+            s.commit()
+        with TestClient(app) as c:
+            r = c.get("/api/verdict?history=5")
+        assert r.status_code == 200, r.text[:500]
+        body = r.json()
+        assert {"policy", "fingerprint", "source", "detail"} <= set(body["verdict"])
+        assert body["history"][0]["fingerprint"] == "fpcrown00001"
+    finally:
+        _clear_history()
+
+
+def test_a_crown_check_writes_the_verdict_history(monkeypatch):
+    """Auto-apply's check is where the governing answer is resolved every tick, so it is
+    what records it: the first check after a change leaves one row."""
+    from pathbrain import crown_follower
+
+    _clear_history()
+    field = {"best_fingerprint": "fpfollow0001", "profiles": [
+        {"fingerprint": "fpfollow0001", "label": "a", "overall": 70.0, "settings": []}]}
+    monkeypatch.setattr(crown_follower, "_compute_field", lambda session: field)
+    monkeypatch.setattr(verdict, "current", lambda session, fp: verdict.Verdict.from_resolution(
+        _resolution(fingerprint="fpfollow0001", source="pooled", policy="pooled", detail="pooled crown")))
+    try:
+        try:
+            crown_follower.check()
+        except Exception:  # noqa: BLE001 — the follow half may stop on the mock firewall
+            pass
+        with session_scope() as s:
+            hist = verdict.history(s)
+        assert hist and hist[0]["fingerprint"] == "fpfollow0001" and hist[0]["source"] == "pooled"
+    finally:
+        _clear_history()

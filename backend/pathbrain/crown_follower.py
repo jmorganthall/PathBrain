@@ -487,6 +487,14 @@ def _do_check() -> dict:  # noqa: PLR0912, PLR0915 — one linear decision ladde
     result["governing_source"] = governing.source
     result["governing_detail"] = governing.detail
     result["duel_champion"] = dict(governing.duel_champion) if governing.duel_champion else None
+    try:  # the verdict history: one row whenever the governing answer changes
+        from .methodology import ensure_current_methodology as _current_methodology
+
+        with session_scope() as session:
+            version = _current_methodology(session, get_config(session)).version
+            verdict.record(session, governing, version)
+    except Exception:  # noqa: BLE001 — a history row must never stop a crown check
+        log.warning("Crown follower: the verdict could not be recorded", exc_info=True)
 
     # Where is the firewall right now? Best-effort; a discovery failure only skips the
     # follow half (tracking still records the change).

@@ -1314,3 +1314,34 @@ class FieldRecord(Base):
     firewall_fingerprint: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
     fingerprint_source: Mapped[str | None] = mapped_column(String(40), nullable=True)
     fingerprint_seen_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class VerdictRecord(Base):
+    """The history of **the Verdict** (`verdict.Verdict`): who was the crown, who named it,
+    and why — one row each time the answer changes.
+
+    The crown-churn ledger (``crown_events``) tracks the *pooled* crown statistic. This is
+    the governing answer every reader acts on: a row is written by `verdict.record` when the
+    Verdict's crown, source or policy differs from the newest row, so "when did the crown
+    change, and on whose word?" is one indexed read. ``evidence`` keeps only the other
+    judges' crown fingerprints (``{fused: fp, …}``), never their full readings.
+    """
+
+    __tablename__ = "verdicts"
+    __table_args__ = (Index("ix_verdicts_decided_at", "decided_at"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    decided_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    # None means no profile could be named yet (an empty field under the version).
+    fingerprint: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    # None means this is the first answer on record.
+    previous_fingerprint: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    source: Mapped[str] = mapped_column(String(20))
+    policy: Mapped[str] = mapped_column(String(20))
+    detail: Mapped[str] = mapped_column(Text)
+    # None means the version could not be read when the answer was recorded.
+    methodology_version: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    # None means the budget was not stated on the answer; else the Verdict's speed_budget.
+    speed_budget: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    # None means no other judge's crown was read on the way; else {judge: fingerprint}.
+    evidence: Mapped[dict | None] = mapped_column(JSON, nullable=True)
