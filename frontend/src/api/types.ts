@@ -1905,6 +1905,23 @@ export interface CrownFollowConfig {
   // The FCP-first crown's band: a profile qualifies within this many percent of the best FCP.
   fcp_band_pct?: number;
   speed_budget?: SpeedBudget;
+  // Who decides the crown under the current methodology. source "methodology": the
+  // version states every number, so the policy and budget above do not crown.
+  judgement?: CrownJudgement;
+}
+
+export interface CrownJudgement {
+  version: string;
+  source: "methodology" | "settings";
+  crowned_by: "ring" | "policy";
+  ring_crown_rule: string;
+  ring_min_margin: number;
+  tie_sigma: number;
+  tie_min_margin: number;
+  min_ring_rounds: number;
+  speed_budget: SpeedBudget;
+  budget_judged_on: "ring" | "pooled";
+  allow_unshaped_crown: boolean;
 }
 
 // The duel ladder's latest fresh champion (crowning candidate under policy "duel").
@@ -1938,7 +1955,7 @@ export interface CrownCheckResult {
   governing_fingerprint?: string | null;
   governing_label?: string | null;
   governing_name?: string | null;
-  governing_source?: "fused" | "pooled" | "duel" | "math" | "lcp_first" | "fcp_first";
+  governing_source?: "fused" | "pooled" | "duel" | "math" | "lcp_first" | "fcp_first" | "ring";
   governing_detail?: string;
   duel_champion?: DuelChampion | null;
   live_fingerprint: string | null;
