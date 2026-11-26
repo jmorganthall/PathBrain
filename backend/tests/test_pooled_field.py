@@ -538,6 +538,7 @@ def two_eras(monkeypatch):
     pooled_field.invalidate_era_cache()
     with session_scope() as s:
         row = s.get(Methodology, VERSION)
+        saved = copy.deepcopy(row.definition)
         row.definition = {**copy.deepcopy(row.definition), "ranking": {"pooled_read": "epochs"}}
     before, after = datetime(2026, 10, 1), datetime(2026, 11, 20)
     _add_era_runs("fast_then", before, [300.0, 301.0, 299.0], [500.0, 501.0, 499.0])
@@ -545,6 +546,8 @@ def two_eras(monkeypatch):
     _add_era_runs("both", after, [330.0, 331.0, 329.0], [1100.0, 1101.0, 1099.0])
     _add_era_runs("new", after, [320.0, 321.0, 319.0], [1000.0, 1001.0, 999.0])
     yield
+    with session_scope() as s:
+        s.get(Methodology, VERSION).definition = saved
     pooled_field.invalidate_era_cache()
 
 
