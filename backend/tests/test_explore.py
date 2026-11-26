@@ -1288,3 +1288,17 @@ def test_the_weighted_spread_degenerates_to_the_plain_one_at_equal_weights():
     thin = explore._weighted_stdev([(v, 1.0) for v in vals[:-1]] + [(99.0, explore.THIN_WEIGHT_FLOOR)])
     assert explore._stdev(vals[:-1]) < thin < explore._stdev(vals)
     assert explore._weighted_stdev([(1.0, 1.0)]) == 0.0
+
+
+def test_the_bar_to_beat_is_the_crown_the_verdict_names():
+    """Explore aims at the profile a proposal would have to dethrone in the ring, not the
+    pooled #1: with the crown marked, the bar is the crown's Overall."""
+    pts = [
+        {"fingerprint": "pooled1", "overall": 80.0, "confident": True},
+        {"fingerprint": "crown01", "overall": 78.5, "confident": True, "is_crown": True},
+        {"fingerprint": "thin001", "overall": 95.0, "confident": False, "trusted": 60.0},
+    ]
+    assert explore._best_established(pts) == 78.5
+    # A thin crown is not a bar anyone can stand behind: back to the best confident one.
+    pts[1]["confident"] = False
+    assert explore._best_established(pts) == 80.0
