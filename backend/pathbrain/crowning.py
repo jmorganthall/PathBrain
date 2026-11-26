@@ -243,7 +243,8 @@ def _resolve_ring(session, pooled_best_fp: str | None, judged: Judgement) -> Map
     if not order:
         return stays("SQM off holds the ring's title and this methodology keeps it off the crown")
     lead = order[0]
-    note = (" (SQM off holds the ring's title; this methodology keeps it off the crown)"
+    won = str(champion["finished_at"])[:10] if "finished_at" in champion and champion["finished_at"] else "its last match"
+    note = (f" (SQM off beat the crown on {won}; this methodology keeps SQM off off the crown)"
             if champ in barred_unshaped else "")
     if not budget["enabled"]:
         return {**base, "fingerprint": lead, "source": "ring",

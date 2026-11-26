@@ -183,6 +183,25 @@ export default function FollowBest() {
   // Under a methodology that states its judgement, the version decides the crown and
   // the policy and budget controls would move nothing, so the card says who decides instead.
   const judged = info?.config.judgement ?? null;
+  // SQM off may hold the crown or not: a methodology number, so flipping it publishes.
+  const setUnshaped = (allow: boolean) => {
+    setBusy(true);
+    api
+      .publishUnshapedCrown(allow)
+      .then((r) => {
+        setSnack({
+          msg: allow
+            ? `SQM off may now hold the crown (published ${r.version}).`
+            : `SQM off races but may not hold the crown (published ${r.version}).`,
+          sev: "success",
+        });
+        load();
+      })
+      .catch((e: unknown) => {
+        setSnack({ msg: e instanceof Error ? e.message : "Could not publish.", sev: "error" });
+      })
+      .finally(() => setBusy(false));
+  };
 
   return (
     <>
@@ -268,7 +287,7 @@ export default function FollowBest() {
               only that ranking's own settings show under it; Apply writes the whole draft.
               The pooled crown is always computed and shown below either way. */}
           {judged && judged.source === "methodology" ? (
-            <MethodologyJudges j={judged} />
+            <MethodologyJudges j={judged} busy={busy} onAllowUnshaped={setUnshaped} />
           ) : (
           <Box>
             <Typography variant="caption" color="text.secondary">
@@ -613,7 +632,15 @@ export default function FollowBest() {
 
 /** Who decides the crown, when the methodology states it: read-only, because changing it
  * is publishing a new methodology, not a setting. */
-function MethodologyJudges({ j }: { j: CrownJudgement }) {
+function MethodologyJudges({
+  j,
+  busy,
+  onAllowUnshaped,
+}: {
+  j: CrownJudgement;
+  busy: boolean;
+  onAllowUnshaped: (allow: boolean) => void;
+}) {
   const short = j.version.replace(/^speed-smoothness-/, "");
   const b = j.speed_budget;
   return (
@@ -630,10 +657,23 @@ function MethodologyJudges({ j }: { j: CrownJudgement }) {
         {b.enabled
           ? `Kept within the speed budget: at most ${b.lcp_pct}% slower LCP and ${b.fcp_pct}% slower FCP than a profile it raced, judged on ${j.budget_judged_on === "ring" ? "head-to-head milliseconds" : "the pooled record"}.`
           : "No speed budget."}{" "}
-        {j.allow_unshaped_crown ? "SQM off may hold the crown." : "SQM off races but may not hold the crown."}
       </Typography>
+      <Tooltip title="SQM off always races in the ring. This decides whether it may win the crown. SQM is what protects the link when it is saturated or chatty, so it is off by default. Flipping it publishes the methodology with this one change; scores carry over.">
+        <Stack direction="row" spacing={1} alignItems="center" sx={{ mt: 0.5 }}>
+          <Switch
+            size="small"
+            checked={j.allow_unshaped_crown}
+            disabled={busy}
+            onChange={(e) => onAllowUnshaped(e.target.checked)}
+            inputProps={{ "aria-label": "SQM off may hold the crown" }}
+          />
+          <Typography variant="caption" color="text.secondary">
+            SQM off may hold the crown
+          </Typography>
+        </Stack>
+      </Tooltip>
       <Typography variant="caption" color="text.secondary" sx={{ display: "block", mt: 0.5 }}>
-        These are part of the methodology, so changing them means publishing a new version.
+        The rest are part of the methodology, so changing them means publishing a new version.
       </Typography>
     </Box>
   );
