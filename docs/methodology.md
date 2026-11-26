@@ -338,6 +338,12 @@ actually rode on it, because the list is the argument for having built it:
   asserts the rubrics are identical, and duel rounds fought under either count under the
   other (`methodology.same_scale`). It is still a publish: picking it re-grades history and
   moves the crown Auto-apply follows.
+- The same block can also say **who may wear the crown**: `ranking.crown_within_speed_budget`
+  (`methodology.crown_within_speed_budget`, v20) makes a profile clearly over the speed budget
+  (`crown_follow.speed_budget`, the setting Auto-apply already enforces) ineligible for the
+  crown, so the crown and the profile Auto-apply follows are one. "Cannot tell" never refuses
+  a crown, and when no eligible profile is within the budget the fused #1 stands. Like
+  `pooled_read`, it is read-only (`same_scale_as` holds) and still a publish.
 
 ## 9. Migration (clean from current version forward)
 

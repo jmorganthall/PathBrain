@@ -74,6 +74,9 @@ def list_methodologies(session: Session = Depends(get_session)) -> dict:
                 "notes": (METHODOLOGY_REGISTRY[v].get("notes") or "")[:400],
                 "pooled_read": ((METHODOLOGY_REGISTRY[v].get("ranking") or {}).get("pooled_read") or "all"),
                 "same_scale_as": METHODOLOGY_REGISTRY[v].get("same_scale_as"),
+                "crown_within_speed_budget": bool(
+                    (METHODOLOGY_REGISTRY[v].get("ranking") or {}).get("crown_within_speed_budget")
+                ),
             }
             for v in _candidates(rows)
         ],

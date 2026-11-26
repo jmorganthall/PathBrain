@@ -147,6 +147,19 @@ export default function VerdictCard() {
                   ) — Auto-apply follows the first crown within it instead; the crowns card names it.
                 </Typography>
               )}
+              {(data.crown_budget?.passed_over?.length ?? 0) > 0 && (
+                <Typography variant="caption" color="text.secondary" sx={{ display: "block" }}>
+                  Within the speed budget. Passed over{" "}
+                  {data.crown_budget!.passed_over
+                    .slice(0, 2)
+                    .map((p) => `${p.name ?? p.fingerprint.slice(0, 8)} (${p.over
+                      .map((o) => `${o.leg.toUpperCase()} +${o.pct.toFixed(0)}%`)
+                      .join(", ")})`)
+                    .join(", ")}
+                  {data.crown_budget!.passed_over.length > 2 ? ` and ${data.crown_budget!.passed_over.length - 2} more` : ""}
+                  : over the budget, so not eligible for the crown.
+                </Typography>
+              )}
             </Box>
           </Stack>
 

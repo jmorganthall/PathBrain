@@ -247,11 +247,13 @@ def crown_agreement(session, cfg: dict | None, *, a: str | None = None, b: str |
                  min_runs=max(2, int(min_runs)), crown_fp=crown_fp, names=names)
     out["methodology"] = current.version
     out["read"] = None
-    from .methodology import pooled_read, same_scale
+    from .methodology import crown_within_speed_budget, pooled_read, same_scale
 
     read_a, read_b = pooled_read(a_def), pooled_read(b_def)
-    if read_a != read_b:
-        out["read"] = read_comparison(session, a, b, read_a, read_b, rubric_alike=same_scale(a, b))
+    budget_a, budget_b = crown_within_speed_budget(a_def), crown_within_speed_budget(b_def)
+    if read_a != read_b or budget_a != budget_b:
+        out["read"] = read_comparison(session, a, b, read_a, read_b, rubric_alike=same_scale(a, b),
+                                      budget_a=budget_a, budget_b=budget_b)
         if same_scale(a, b):
             # The cold medians are priced identically under both, so their audit can only say
             # "alike": the difference is in how the ranking reads the record, so that is the verdict.
@@ -268,14 +270,20 @@ _READ_WORDS = {
 }
 
 
-def read_comparison(session, a: str, b: str, read_a: str, read_b: str, *, rubric_alike: bool) -> dict:
+def _rule_words(read: str, budget: bool) -> str:
+    return _READ_WORDS[read] + ("; the crown kept within the speed budget" if budget else "")
+
+
+def read_comparison(session, a: str, b: str, read_a: str, read_b: str, *, rubric_alike: bool,
+                    budget_a: bool = False, budget_b: bool = False) -> dict:
     """Two versions that read the pooled record differently (v17's whole-record median, v19's
-    per-era one): the fused ranking under each read, from today's scores and ring, compared
-    the way `assess` compares two rubrics. Read-only (`overall_ranking.ranking` previews)."""
+    per-era one), or that differ in whether the crown is kept within the speed budget (v20):
+    the fused ranking under each, from today's scores and ring, compared the way `assess`
+    compares two rubrics. Read-only (`overall_ranking.ranking` previews)."""
     from . import overall_ranking
 
-    ra = overall_ranking.ranking(session, backtest=False, live=False, read=read_a)
-    rb = overall_ranking.ranking(session, backtest=False, live=False, read=read_b)
+    ra = overall_ranking.ranking(session, backtest=False, live=False, read=read_a, budget=budget_a)
+    rb = overall_ranking.ranking(session, backtest=False, live=False, read=read_b, budget=budget_b)
 
     def order(r: dict) -> dict[str, int]:
         rows = [p for p in r.get("profiles") or [] if p.get("eligible")]
@@ -292,11 +300,11 @@ def read_comparison(session, a: str, b: str, read_a: str, read_b: str, *, rubric
 
     sa, sb = _short(a), _short(b)
     prefix = (
-        f"{sa} and {sb} grade every run alike; they differ in how the ranking reads the pooled record "
-        f"({sa}: {_READ_WORDS[read_a]}; {sb}: {_READ_WORDS[read_b]}). "
+        f"{sa} and {sb} grade every run alike; they differ in how the ranking reads them "
+        f"({sa}: {_rule_words(read_a, budget_a)}; {sb}: {_rule_words(read_b, budget_b)}). "
         if rubric_alike else
-        f"{sa} and {sb} also read the pooled record differently ({sa}: {_READ_WORDS[read_a]}; "
-        f"{sb}: {_READ_WORDS[read_b]}). "
+        f"{sa} and {sb} also rank differently ({sa}: {_rule_words(read_a, budget_a)}; "
+        f"{sb}: {_rule_words(read_b, budget_b)}). "
     )
     if not fa or not fb:
         verdict = "insufficient"
@@ -323,6 +331,7 @@ def read_comparison(session, a: str, b: str, read_a: str, read_b: str, *, rubric
     eras = rb.get("eras") or ra.get("eras") or {}
     return {
         "a_read": read_a, "b_read": read_b, "rubric_alike": rubric_alike,
+        "a_crown_within_budget": budget_a, "b_crown_within_budget": budget_b,
         "verdict": verdict, "text": prefix + body,
         "rho": round(rho, 3) if rho is not None else None, "profiles": len(shared),
         "top_a": {"fingerprint": fa, "name": best_a.get("name"), "fused": best_a.get("fused")} if fa else None,

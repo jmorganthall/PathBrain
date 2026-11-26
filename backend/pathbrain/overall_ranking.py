@@ -71,7 +71,9 @@ from datetime import datetime, timezone
 from . import decidability
 from .config_store import get_config
 from .logging_config import get_logger
-from .methodology import ensure_current_methodology, overall_method, pooled_read, same_scale
+from .methodology import (
+    crown_within_speed_budget, ensure_current_methodology, overall_method, pooled_read, same_scale,
+)
 from .settings_profile import SQM_OFF_FINGERPRINT
 
 log = get_logger(__name__)
@@ -633,7 +635,10 @@ def _read_per_era(session, pooled: dict[str, dict]) -> tuple[dict[str, dict], di
     }
 
 
-def ranking(session, *, backtest: bool = True, live: bool = True, read: str | None = None) -> dict:
+def ranking(
+    session, *, backtest: bool = True, live: bool = True, read: str | None = None,
+    budget: bool | None = None,
+) -> dict:
     """The fused ranking, the crown it names, and everything a reader needs to see why.
 
     τ is always the measured slack (or the stated default under `MIN_SLACK_PAIRS`); there
@@ -648,6 +653,12 @@ def ranking(session, *, backtest: bool = True, live: bool = True, read: str | No
     then. ``read`` overrides it for a **preview only** (the Crown agreement card, the
     Overall page's "what v19 would show"): the crown, Auto-apply and the ring call this with
     no override and so follow the published methodology, never a request.
+
+    Under a methodology that keeps the crown within the speed budget
+    (`methodology.crown_within_speed_budget`, v20) a profile clearly slower than the
+    field's fastest LCP or FCP by more than the budget allows is not eligible for the crown
+    (`_keep_crown_within_budget`), so the crown is the profile Auto-apply follows.
+    ``budget`` overrides that for a preview only, as ``read`` does.
     """
     from .phase_timing import laps
 
@@ -664,6 +675,8 @@ def ranking(session, *, backtest: bool = True, live: bool = True, read: str | No
     method = overall_method(methodology.definition or {})
     published_read = pooled_read(methodology.definition or {})
     read_as = read if read in ("all", "epochs") else published_read
+    published_budget = crown_within_speed_budget(methodology.definition or {})
+    budget_as = published_budget if budget is None else bool(budget)
     lap("methodology")
 
     out: dict = {
@@ -692,7 +705,10 @@ def ranking(session, *, backtest: bool = True, live: bool = True, read: str | No
         "backtest": None,
         "pooled_read": read_as,
         "published_read": published_read,
-        "preview": read_as != published_read,
+        "preview": read_as != published_read or budget_as != published_budget,
+        "crown_within_budget": budget_as,
+        "published_crown_within_budget": published_budget,
+        "crown_budget": None,
         "eras": None,
         "computed_at": datetime.now(timezone.utc).replace(tzinfo=None).isoformat(),
     }
@@ -797,6 +813,9 @@ def ranking(session, *, backtest: bool = True, live: bool = True, read: str | No
             r["confident"] or r["rounds"] >= MIN_RING_ROUNDS_FOR_CROWN
         )
     rows.sort(key=lambda r: (r["fused"], r["iterations"], r["rounds"]), reverse=True)
+    if budget_as:
+        out["crown_budget"] = _keep_crown_within_budget(session, rows)
+        lap("budget")
     eligible = [r for r in rows if r["eligible"]]
     pooled_best = next(
         (r for r in sorted(
@@ -976,6 +995,14 @@ def ranking(session, *, backtest: bool = True, live: bool = True, read: str | No
             key=lambda r: (abs(r["moved"] or 0), r["rounds"]), reverse=True,
         )[:MAX_MOVERS],
     })
+    passed = (out.get("crown_budget") or {}).get("passed_over") or []
+    if passed:
+        names = ", ".join(p["name"] or p["fingerprint"][:8] for p in passed[:3])
+        more = f" and {len(passed) - 3} more" if len(passed) > 3 else ""
+        out["verdict"] += (
+            f" {names}{more} ranked higher but {'is' if len(passed) == 1 else 'are'} over the speed "
+            "budget, so not eligible for the crown under this methodology."
+        )
     lap("verdict")
     if backtest:
         try:
@@ -1064,6 +1091,51 @@ def _attach_paper_cost(session, version: str, corners: dict) -> None:
             corners[k]["vs_paper"] = cost.get(corners[k]["fingerprint"])
     except Exception:  # noqa: BLE001
         log.warning("paper cost unavailable", exc_info=True)
+
+
+def _keep_crown_within_budget(session, rows: list[dict]) -> dict:
+    """The crown rule of a methodology that keeps it within the speed budget (v20): every
+    eligible row that is clearly over the budget (`crowning.budget_checks`, the same check
+    Auto-apply makes) loses its eligibility and carries ``over_speed_budget``. A row whose
+    gaps cannot be read keeps it ("cannot tell" never refuses a crown), and when no eligible
+    row is within the budget nothing is changed, so the fused #1 stands, as Auto-apply
+    already did. ``rows`` is sorted best first; returns the reading for the page:
+    ``{enabled, lcp_pct, fcp_pct, applied, passed_over: [{fingerprint, name, over}],
+    none_within}``, where ``passed_over`` lists the over-budget profiles ranked above the
+    crown it leaves."""
+    from .crowning import budget_checks, speed_budget
+
+    budget = speed_budget(get_config(session))
+    reading = {**budget, "applied": False, "passed_over": [], "none_within": False}
+    if not budget["enabled"]:
+        return reading
+    candidates = [r for r in rows if r["eligible"]]
+    try:
+        checks = budget_checks(session, [r["fingerprint"] for r in candidates], budget)
+    except Exception:  # noqa: BLE001 — a reading, never a reason the ranking fails
+        log.warning("Overall ranking: the speed budget could not be read", exc_info=True)
+        return reading
+    over = {r["fingerprint"] for r in candidates if (checks.get(r["fingerprint"]) or {}).get("within") is False}
+    if not over:
+        reading["applied"] = True
+        return reading
+    if len(over) == len(candidates):
+        reading["none_within"] = True
+        return reading
+    reading["applied"] = True
+    ahead = True
+    for r in candidates:
+        if r["fingerprint"] not in over:
+            ahead = False
+            continue
+        r["eligible"] = False
+        r["over_speed_budget"] = checks[r["fingerprint"]]["over"]
+        if ahead:
+            reading["passed_over"].append({
+                "fingerprint": r["fingerprint"], "name": r["name"],
+                "over": checks[r["fingerprint"]]["over"],
+            })
+    return reading
 
 
 def _budget_reading(session, fingerprint: str) -> dict | None:
