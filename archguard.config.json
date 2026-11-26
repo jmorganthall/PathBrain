@@ -1,0 +1,158 @@
+{
+  "baselineFile": ".archguard-baseline.json",
+  "rules": [
+    {
+      "id": "crown-resolved-outside-verdict",
+      "title": "The crown resolved outside the Verdict (one chain)",
+      "pattern": "\\bcrowning\\.resolve\\(|\\b_resolve_policy\\(",
+      "include": [
+        "backend/pathbrain/**/*.py"
+      ],
+      "exclude": [
+        "backend/pathbrain/verdict.py",
+        "backend/pathbrain/crowning.py"
+      ],
+      "fix": "Read verdict.current(session, pooled_fp) and its typed fields. The Verdict is the one place the crown is decided (plan: one chain, S4)."
+    },
+    {
+      "id": "crown-judged-by-a-reader",
+      "title": "A reader asks a single judge for the crown instead of the Verdict",
+      "pattern": "\\boverall_ranking\\.crown\\(|\\blatest_champion\\(|\\bmath_crown\\(|\\blcp_first_crown\\(|\\bfcp_first_crown\\(|\\bleg_first_crown\\(|\\bactive_policy\\(",
+      "include": [
+        "backend/pathbrain/**/*.py"
+      ],
+      "exclude": [
+        "backend/pathbrain/verdict.py",
+        "backend/pathbrain/crowning.py",
+        "backend/pathbrain/overall_ranking.py",
+        "backend/pathbrain/pooled_field.py"
+      ],
+      "fix": "Read the crown and its evidence from verdict.current() (or GET /api/verdict). A judge's own crown is evidence shown beside the Verdict, never a crown a reader acts on."
+    },
+    {
+      "id": "crown-promoted-outside-auto-apply",
+      "title": "A profile promoted to the firewall by something other than Auto-apply",
+      "pattern": "\\bauto_promote\\b|\\bapply_best\\b",
+      "include": [
+        "backend/pathbrain/**/*.py"
+      ],
+      "exclude": [],
+      "fix": "Engines measure and the ring decides; Auto-apply (crown_follower) is the one writer that leaves a profile on the firewall. Make the engine's winner a ring candidate instead (plan: one chain, S12)."
+    },
+    {
+      "id": "frontend-crown-outside-verdict",
+      "title": "A view reads a crown field other than the Verdict",
+      "pattern": "\\b(best_fingerprint|governing_fingerprint|champion_fingerprint|crown_fingerprint)\\b",
+      "include": [
+        "frontend/src/**/*.js",
+        "frontend/src/**/*.jsx",
+        "frontend/src/**/*.ts",
+        "frontend/src/**/*.tsx"
+      ],
+      "exclude": [],
+      "fix": "Read the crown from GET /api/verdict, so every screen names the same profile Auto-apply follows (plan: one chain, S8 to S10)."
+    },
+    {
+      "id": "shape-outside-domain",
+      "title": "A data class, Pydantic model or TypedDict declared outside the model files",
+      "pattern": "^class \\w+\\((BaseModel|ORMModel|TypedDict|NamedTuple)\\)|^@dataclass",
+      "include": [
+        "backend/**/*.py"
+      ],
+      "exclude": [
+        "backend/pathbrain/models.py",
+        "backend/pathbrain/api/schemas.py",
+        "backend/pathbrain/domain/**",
+        "backend/tests/**"
+      ],
+      "fix": "Add the shape to the model file that owns its layer (ORM: app/models.py, API: app/schemas.py, engine: tco_engine/models.py) or reuse one there."
+    },
+    {
+      "id": "bare-dict-return",
+      "title": "A function that returns a bare dict or Any instead of a typed shape",
+      "pattern": "->\\s*(dict|Dict|list\\[dict|List\\[Dict|Any)\\b",
+      "include": [
+        "backend/**/*.py"
+      ],
+      "exclude": [
+        "backend/tests/**"
+      ],
+      "fix": "Return a typed model (a Pydantic response model or an engine dataclass). If it goes to the frontend, it is part of the API contract and needs a schema in app/schemas.py."
+    },
+    {
+      "id": "escape-hatch",
+      "title": "type: ignore or cast()",
+      "pattern": "#\\s*type:\\s*ignore|\\bcast\\(",
+      "include": [
+        "backend/**/*.py"
+      ],
+      "exclude": [
+        "backend/tests/**"
+      ],
+      "countComments": true,
+      "fix": "Fix the type instead of silencing it."
+    },
+    {
+      "id": "untyped-json-column",
+      "title": "A JSON/Text column holding structured data",
+      "pattern": "mapped_column\\(\\s*JSON|, JSON,|_json:\\s*Mapped",
+      "include": [
+        "backend/pathbrain/models.py"
+      ],
+      "exclude": [],
+      "fix": "Give the structure its own table, or a Pydantic model that every read parses through."
+    },
+    {
+      "id": "nullable-without-meaning",
+      "title": "A nullable column whose null has no written meaning",
+      "pattern": "Mapped\\[[^\\]]*(\\| None|Optional)",
+      "include": [
+        "backend/pathbrain/models.py"
+      ],
+      "exclude": [],
+      "unlessPrevLines": {
+        "lines": 3,
+        "pattern": "[Nn]ull (=|means|is)|[Nn]one (=|means|is)"
+      },
+      "fix": "Write what None means in a comment just above the column, once, so no reader decides it for itself (the untagged-licence-line bug)."
+    },
+    {
+      "id": "runtime-ddl",
+      "title": "Schema changed from application code instead of a migration",
+      "pattern": "\\b(ALTER|CREATE|DROP)\\s+(TABLE|COLUMN|TYPE|INDEX)\\b",
+      "include": [
+        "backend/pathbrain/**/*.py"
+      ],
+      "exclude": [
+        "backend/migrations/**",
+        "backend/alembic/**"
+      ],
+      "fix": "Write an Alembic migration (TARGET_SCHEMA D6)."
+    },
+    {
+      "id": "defensive-read",
+      "title": ".get() with a fallback on a dict that should have a known shape",
+      "pattern": "\\.get\\(",
+      "include": [
+        "backend/**/*.py"
+      ],
+      "exclude": [
+        "backend/tests/**"
+      ],
+      "fix": "Read a typed field. If the key can be missing, model that as an explicit state in the type."
+    },
+    {
+      "id": "untyped-frontend",
+      "title": "A frontend file in plain JavaScript (no type checks against the API)",
+      "pattern": "^",
+      "include": [
+        "frontend/src/**/*.js",
+        "frontend/src/**/*.jsx"
+      ],
+      "exclude": [],
+      "countComments": true,
+      "fix": "Write new frontend files as .ts/.tsx using types generated from the backend's OpenAPI schema. Converting an existing .jsx file lowers this count.",
+      "perFile": true
+    }
+  ]
+}

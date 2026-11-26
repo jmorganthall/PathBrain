@@ -99,6 +99,17 @@ docker compose up --build   # -> http://localhost:8000
   `publish_followthrough.py` runs what follows a re-grade (`test_publish_followthrough.py`).
   The PR template's Follow-through checklist lists it.
 
+### One chain: the Verdict decides the crown
+
+- **The crown is decided in one place:** `verdict.current()` returns a typed `Verdict`
+  (`domain/verdict.py`). Auto-apply, the API and every view read it (or `GET /api/verdict`);
+  no reader calls `crowning.resolve` or a single judge's crown to act on
+  (`test_archguard_chain.py`). Other judges' crowns are `Verdict.evidence`, shown, never followed.
+- **archguard ratchets the chain:** `node scripts/archguard.mjs` (CI: `.github/workflows/archguard.yml`)
+  counts readers that still judge for themselves, promoters other than Auto-apply, and views
+  that read a crown field other than the Verdict, plus the data-framework rules. A count may
+  go down (`--lower-baseline`), never up. Never raise `.archguard-baseline.json` to pass.
+
 ### Firewall write path
 
 - **Every firewall write goes through `firewall_write.py`**, which calls the provider; an AST
