@@ -372,10 +372,18 @@ def step() -> bool:
     return bool(result.get("applied"))
 
 
-def poke() -> None:
-    """Make the next scheduler tick run a full check (used when config just changed or a
-    re-grade / methodology switch may have re-ranked the field without any run completing)."""
+def poke(reason: str | None = None) -> None:
+    """Make the next scheduler tick run a full check (used when config just changed, a
+    re-grade / methodology switch may have re-ranked the field, or a duel just finished with a
+    verdict — any change to the evidence that arrives without a run completing). ``reason``
+    is logged only.
+
+    The duel used to call ``poke("duel verdict")`` against a signature that took no argument;
+    the TypeError was swallowed at debug level, so a finished duel never prompted a crown
+    re-check and the ring's verdict waited for the next run or the backstop."""
     _state["last_full_check"] = 0.0
+    if reason:
+        log.info("Crown follower: full check requested (%s)", reason)
 
 
 def check() -> dict:
