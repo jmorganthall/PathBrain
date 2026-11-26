@@ -9,6 +9,7 @@ from __future__ import annotations
 import threading
 import time
 from collections import OrderedDict
+from collections.abc import Mapping
 from datetime import datetime, timezone
 from statistics import median, quantiles
 
@@ -3020,6 +3021,10 @@ def crown_follow_status(session: Session = Depends(get_session)) -> dict:
             "lcp_band_pct": _band(session),
             "fcp_band_pct": _band(session, "fcp_first"),
             "speed_budget": crowning.speed_budget(get_config(session)),
+            # Who decides the crown under the current methodology. With ``source ==
+            # "methodology"`` the version states every number, so the policy and budget
+            # above are not what crowns: the card shows these instead of its controls.
+            "judgement": _judgement_out(session),
         },
         "policies": list(crowning.POLICIES),
         # The duel ladder's latest fresh champion (or null) — shown beside the pooled
@@ -3029,6 +3034,15 @@ def crown_follow_status(session: Session = Depends(get_session)) -> dict:
         "stats": churn,
         "events": events,
     }
+
+
+def _judgement_out(session: Session) -> Mapping[str, object]:
+    """The current methodology's judgement as the crown card reads it."""
+    from dataclasses import asdict
+
+    from ..methodology import current_judgement
+
+    return asdict(current_judgement(session))
 
 
 def _crown_follow_names(session: Session, fingerprints: list[str | None]) -> dict[str, str]:

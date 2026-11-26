@@ -27,7 +27,7 @@ import Typography from "@mui/material/Typography";
 import EmojiEventsIcon from "@mui/icons-material/EmojiEvents";
 
 import { api } from "../api/client";
-import type { CrownFollowStatus, CrowningPolicy } from "../api/types";
+import type { CrownFollowStatus, CrowningPolicy, CrownJudgement } from "../api/types";
 import { fmtTimeShort } from "../utils/format";
 
 const POLL_MS = 60_000;
@@ -180,6 +180,9 @@ export default function FollowBest() {
     last.crown_fingerprint !== followedFp
   );
   const changes = (info?.events ?? []).filter((e) => e.kind === "change").slice(0, 5);
+  // Under a methodology that states its judgement, the version decides the crown and
+  // the policy and budget controls would move nothing, so the card says who decides instead.
+  const judged = info?.config.judgement ?? null;
 
   return (
     <>
@@ -264,6 +267,9 @@ export default function FollowBest() {
           {/* The first-class CROWNING POLICY: which verdict the follower acts on. Pick one;
               only that ranking's own settings show under it; Apply writes the whole draft.
               The pooled crown is always computed and shown below either way. */}
+          {judged && judged.source === "methodology" ? (
+            <MethodologyJudges j={judged} />
+          ) : (
           <Box>
             <Typography variant="caption" color="text.secondary">
               Which ranking to follow
@@ -411,6 +417,7 @@ export default function FollowBest() {
               </Button>
             </Stack>
           </Box>
+          )}
 
           <Divider />
 
@@ -422,7 +429,9 @@ export default function FollowBest() {
               shown, demoted, because it is the tracked statistic the churn stats count. */}
           <Box>
             <Typography variant="caption" color="text.secondary">
-              {followedSource === "fused"
+              {followedSource === "ring"
+                ? "Following · the ring's champion"
+                : followedSource === "fused"
                 ? "Following · Overall ranking"
                 : followedSource === "duel"
                   ? "Following · duel champion"
@@ -601,6 +610,34 @@ export default function FollowBest() {
 }
 
 // ── Ranking choices and the draft ──────────────────────────────────────────────────
+
+/** Who decides the crown, when the methodology states it: read-only, because changing it
+ * is publishing a new methodology, not a setting. */
+function MethodologyJudges({ j }: { j: CrownJudgement }) {
+  const short = j.version.replace(/^speed-smoothness-/, "");
+  const b = j.speed_budget;
+  return (
+    <Box>
+      <Typography variant="caption" color="text.secondary">
+        Who decides the crown · methodology {short}
+      </Typography>
+      <Typography variant="body2" sx={{ mt: 0.5 }}>
+        {j.crowned_by === "ring"
+          ? `The ring's champion (${j.ring_crown_rule} rule${j.ring_min_margin > 0 ? `, wins by ${j.ring_min_margin} pts or more` : ", a win is a win"}). A draw leaves the crown where it is.`
+          : "The crowning policy the methodology names."}
+      </Typography>
+      <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5 }}>
+        {b.enabled
+          ? `Kept within the speed budget: at most ${b.lcp_pct}% slower LCP and ${b.fcp_pct}% slower FCP than a profile it raced, judged on ${j.budget_judged_on === "ring" ? "head-to-head milliseconds" : "the pooled record"}.`
+          : "No speed budget."}{" "}
+        {j.allow_unshaped_crown ? "SQM off may hold the crown." : "SQM off races but may not hold the crown."}
+      </Typography>
+      <Typography variant="caption" color="text.secondary" sx={{ display: "block", mt: 0.5 }}>
+        These are part of the methodology, so changing them means publishing a new version.
+      </Typography>
+    </Box>
+  );
+}
 
 const RANKINGS: { policy: CrowningPolicy; label: string; blurb: string }[] = [
   {

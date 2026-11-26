@@ -158,3 +158,17 @@ def test_crown_agreement_previews_who_v21_would_crown(ring):
     with session_scope() as s:
         out = crown_agreement.crown_agreement(s, get_config(s), a="speed-smoothness-v20", b=V21, min_runs=5)
     assert out["ring"]["verdict"] == "agree" and "keep" in out["ring"]["text"]
+
+
+def test_the_crown_card_is_told_who_decides_the_crown(client, monkeypatch):
+    """S19: the Auto-apply card reads the current judgement. Under v17 the settings decide;
+    under a version with a judgement block the methodology does, and the card shows that
+    in place of the policy picker and budget sliders."""
+    body = client.get("/api/settings/crown-follow").json()
+    assert body["config"]["judgement"]["source"] == "settings"
+    v21 = methodology.judgement(V21, methodology.build_definition_from_spec(methodology.METHODOLOGY_REGISTRY[V21]), {})
+    monkeypatch.setattr(methodology, "current_judgement", lambda session: v21)
+    j = client.get("/api/settings/crown-follow").json()["config"]["judgement"]
+    assert (j["source"], j["crowned_by"], j["version"]) == ("methodology", "ring", V21)
+    assert j["speed_budget"] == {"enabled": True, "lcp_pct": 20.0, "fcp_pct": 25.0}
+    assert j["allow_unshaped_crown"] is False
