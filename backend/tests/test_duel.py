@@ -4288,3 +4288,49 @@ def test_belt_every_three_is_the_shipped_default_and_the_upgrade_moves_strict_al
     assert up({"duel": {"belt_every": 4}}) is None, "a deliberate cadence is kept"
     assert up({"duel": {}}) is None and up({}) is None, "a fresh install already has the default"
     assert any(name == "duel-belt-every-three" for name, _ in config_store.CONFIG_UPGRADES)
+
+
+def test_each_counted_round_records_both_sides_raw_milliseconds(monkeypatch):
+    """One chain, S15: the ring keeps each round's raw FCP and LCP ms for both sides, so the
+    speed budget can be judged back to back, not only on the pooled record."""
+    import types
+
+    import pathbrain.api.routes_settings as rs
+    from pathbrain.models import RingRoundMs
+
+    with session_scope() as s:
+        s.query(Duel).delete()
+        s.query(RingRoundMs).delete()
+    applied: list[str] = []
+    fake_field = {
+        "best_fingerprint": "incms00000x",
+        "profiles": [
+            {"fingerprint": "incms00000x", "label": "incumbent", "settings": [{"label": "wan", "quantum": 1514}]},
+            {"fingerprint": "chams00000x", "label": "challenger", "settings": [{"label": "wan", "quantum": 300}]},
+        ],
+    }
+    monkeypatch.setattr(rs, "compute_profiles", lambda session, **_: fake_field)
+    monkeypatch.setattr(
+        rs, "_compute_heirs", lambda result, session, live=None: {"items": [{"fingerprint": "chams00000x"}]}
+    )
+    monkeypatch.setattr(challenger_mod, "_apply_profile", lambda p, s, fp: applied.append(fp))
+    _no_settle()
+    by_run = _score_by_profile(monkeypatch, applied, {"incms00000x": 60.0, "chams00000x": 66.0})
+    ms = {"incms00000x": {"fcp": 300.0, "lcp": 900.0}, "chams00000x": {"fcp": 280.0, "lcp": 1000.0}}
+    monkeypatch.setattr(
+        duel_mod, "_run_score",
+        lambda session, run_id, ver: types.SimpleNamespace(
+            metric_values=ms.get(by_run.get(run_id, ""), {}), subscores={}),
+    )
+
+    d = _wait_finish(duel_mod.start(duration_minutes=10))
+    assert d.status == DuelStatus.COMPLETE, d.error
+    pairs = d.matchups[0]["pairs"]
+    with session_scope() as s:
+        rows = s.query(RingRoundMs).filter(RingRoundMs.duel_id == d.id).all()
+        got = {(r.metric, r.challenger_ms, r.incumbent_ms) for r in rows}
+        assert {r.incumbent for r in rows} == {"incms00000x"}
+        assert {r.challenger for r in rows} == {"chams00000x"}
+        assert len(rows) == 2 * pairs
+        assert sorted({r.round_index for r in rows}) == list(range(pairs))
+    assert got == {("fcp", 280.0, 300.0), ("lcp", 1000.0, 900.0)}

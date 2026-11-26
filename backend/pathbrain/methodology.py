@@ -947,6 +947,10 @@ RANKING_KEYS = ("pooled_read", "crown_within_speed_budget")
 #: The spec keys that change how a version's numbers are *read*, not what they are. Two
 #: versions that differ only here grade every run alike (`same_scale`).
 READ_ONLY_KEYS = ("ranking", "judgement", "notes", "same_scale_as", "derivation_version")
+#: The legs the speed budget is stated in (``lcp_pct`` / ``fcp_pct`` in a judgement block):
+#: raw milliseconds, never Overall points. The ring keeps these per round
+#: (`duel.ROUND_MS_METRICS`) so the budget can be judged back to back.
+BUDGET_LEGS = ("fcp", "lcp")
 
 
 # Invariant: a version that says it is on another's scale is that version's rubric exactly —

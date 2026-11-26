@@ -1369,3 +1369,38 @@ class RingNomination(Base):
     source: Mapped[str] = mapped_column(String(20))
     # One sentence on why, shown as the ring seat's reason.
     reason: Mapped[str] = mapped_column(Text)
+
+
+class RingRoundMs(Base):
+    """One metric's raw milliseconds for one counted ring round, both sides. Append-only.
+
+    The ring scores a round in the methodology's Overall; the speed budget is about raw
+    milliseconds (how much slower than the fastest the crown may be). Before this table the
+    ring kept only subscore points per crown leg, so the budget could only be judged on the
+    pooled record. A row is written for each counted round (`duel._resolve`) and each of
+    FCP and LCP that both sides measured, so the budget can be judged back to back
+    (`methodology` judgement ``budget_judged_on == "ring"``). Never updated or deleted.
+    """
+
+    __tablename__ = "ring_round_ms"
+    __table_args__ = (
+        Index("ix_ring_round_ms_pair", "incumbent", "challenger"),
+        Index("ix_ring_round_ms_duel", "duel_id"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    duel_id: Mapped[int] = mapped_column(Integer)
+    # The round's number within its match (0-based, the match's counted rounds in order).
+    round_index: Mapped[int] = mapped_column(Integer)
+    # The methodology version the round was scored under.
+    methodology: Mapped[str] = mapped_column(String(64))
+    # The belt-holder's and the challenger's settings fingerprints.
+    incumbent: Mapped[str] = mapped_column(String(40))
+    challenger: Mapped[str] = mapped_column(String(40))
+    # "fcp" or "lcp".
+    metric: Mapped[str] = mapped_column(String(8))
+    # The challenger leg's run median, and the mean of the usable belt legs flanking it.
+    challenger_ms: Mapped[float] = mapped_column(Float)
+    incumbent_ms: Mapped[float] = mapped_column(Float)
+    challenger_run_id: Mapped[int] = mapped_column(Integer)

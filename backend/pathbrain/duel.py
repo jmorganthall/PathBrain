@@ -51,8 +51,8 @@ from .database import session_scope
 from .domain.verdict import OpenNomination
 from .logging_config import get_logger
 from .session_runtime import FailureStreak, FirewallUnavailable, SessionAbort, describe_failure
-from .methodology import VerdictRules, judged_rules, latest_score, overall_metrics, same_scale, verdict_rules
-from .models import Duel, DuelStatus, LeverCampaign, Methodology, Score
+from .methodology import BUDGET_LEGS, VerdictRules, judged_rules, latest_score, overall_metrics, same_scale, verdict_rules
+from .models import Duel, DuelStatus, LeverCampaign, Methodology, RingRoundMs, Score
 from .rating import ELO_SCALE, PROVISIONAL_PAIRS, RANK_SIGMA, fit_bradley_terry
 from .providers import get_provider
 from .runner import request_stop, run_cancelled, run_chunk, teardown_plugins
@@ -807,6 +807,39 @@ def _run_crown(run_id: int, methodology_version: str) -> dict[str, float] | None
         out = {m: float(sub[m]) for m in keys if isinstance(sub.get(m), (int, float))
                and not isinstance(sub.get(m), bool)}
         return out or None
+
+
+#: The raw metrics a ring round records in milliseconds, both sides (`RingRoundMs`).
+ROUND_MS_METRICS = BUDGET_LEGS
+
+
+def _record_round_ms(duel_id: int, round_index: int, methodology_version: str, incumbent_fp: str,
+                     challenger_fp: str, challenger_run: int | None, belt_runs: list[int | None]) -> None:
+    """Append the round's raw FCP and LCP milliseconds, both sides (`RingRoundMs`), so the
+    speed budget can be judged back to back. Best-effort: a lost row never stops a match."""
+    try:
+        runs = [r for r in belt_runs if r is not None]
+        if challenger_run is None or not runs:
+            return
+        with session_scope() as session:
+            values: dict[int, dict] = {}
+            for run_id in [challenger_run, *runs]:
+                score = _run_score(session, run_id, methodology_version)
+                values[run_id] = dict(score.metric_values or {}) if score is not None else {}
+            for metric in ROUND_MS_METRICS:
+                mine = values[challenger_run][metric] if metric in values[challenger_run] else None
+                theirs = [values[r][metric] for r in runs if metric in values[r]]
+                theirs = [float(v) for v in theirs if isinstance(v, (int, float)) and not isinstance(v, bool)]
+                if not isinstance(mine, (int, float)) or isinstance(mine, bool) or not theirs:
+                    continue
+                session.add(RingRoundMs(
+                    duel_id=duel_id, round_index=round_index, methodology=methodology_version,
+                    incumbent=incumbent_fp, challenger=challenger_fp, metric=metric,
+                    challenger_ms=float(mine), incumbent_ms=sum(theirs) / len(theirs),
+                    challenger_run_id=challenger_run,
+                ))
+    except Exception:  # noqa: BLE001
+        log.debug("duel %s: round ms not recorded", duel_id, exc_info=True)
 
 
 def _field_options(provider) -> dict[str, list[float]]:
@@ -3961,6 +3994,8 @@ def _run_ring(
         seat.sprt.add_pair(delta > 0)
         seat.paired.add(delta)
         _append_crown(seat, leg, usable)
+        _record_round_ms(duel_id, len(seat.round_legs) - 1, meth_version, seat.reference_fp, seat.fp,
+                         leg.run_id, [f.run_id for f in usable])
 
     def _close(seat: _Seat, verdict: str, reason: str, ref: dict | None = None,
                methodology: str | None = None) -> None:
