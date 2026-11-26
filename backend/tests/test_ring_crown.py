@@ -80,7 +80,7 @@ def test_sqm_off_may_hold_the_crown_only_when_the_methodology_allows(ring):
     with session_scope() as s:
         out = crowning.resolve(s, "pooledbest")
     assert out["fingerprint"] == "shaped"
-    assert "SQM off holds the ring's title" in out["detail"]
+    assert "SQM off beat the crown on 2026-11-26" in out["detail"]
     ring["judged"] = replace(ring["judged"], allow_unshaped_crown=True)
     with session_scope() as s:
         assert crowning.resolve(s, "pooledbest")["fingerprint"] == SQM_OFF_FINGERPRINT
@@ -172,3 +172,51 @@ def test_the_crown_card_is_told_who_decides_the_crown(client, monkeypatch):
     assert (j["source"], j["crowned_by"], j["version"]) == ("methodology", "ring", V21)
     assert j["speed_budget"] == {"enabled": True, "lcp_pct": 20.0, "fcp_pct": 25.0}
     assert j["allow_unshaped_crown"] is False
+
+
+@pytest.fixture()
+def v21_current():
+    """v21 as the current methodology for one test, then back to whatever was current."""
+    from pathbrain.config_store import save_config
+    from pathbrain.models import Methodology
+
+    with session_scope() as s:
+        original = get_config(s).get("methodology_version")
+        save_config(s, {"methodology_version": V21})
+        methodology.ensure_current_methodology(s, get_config(s))
+    yield
+    with session_scope() as s:
+        save_config(s, {"methodology_version": original})
+        row = s.get(Methodology, f"{V21}+{methodology.UNSHAPED_CROWN_SEGMENT}")
+        if row is not None:
+            s.delete(row)
+        methodology.ensure_current_methodology(s, get_config(s))
+
+
+def test_sqm_off_may_crown_is_a_same_scale_publish_from_the_crown_card(client, monkeypatch, v21_current):
+    """S19b: the crown card's switch publishes the current version with that one number
+    changed, on the same scale (scores carry over), and flipping it back returns to the base."""
+    from pathbrain.api import routes_methodology
+
+    started = []
+    monkeypatch.setattr(routes_methodology.jobs, "start", lambda *a, **k: started.append(a) or "job-1")
+    fork = f"{V21}+{methodology.UNSHAPED_CROWN_SEGMENT}"
+    assert methodology.same_scale(fork, V21) and methodology.same_scale(fork, "speed-smoothness-v17")
+
+    r = client.post("/api/methodologies/unshaped-crown", json={"allow": True}).json()
+    assert (r["changed"], r["version"], r["job_id"]) == (True, fork, "job-1")
+    j = client.get("/api/settings/crown-follow").json()["config"]["judgement"]
+    assert (j["version"], j["allow_unshaped_crown"]) == (fork, True)
+    assert client.post("/api/methodologies/unshaped-crown", json={"allow": True}).json()["changed"] is False
+
+    r = client.post("/api/methodologies/unshaped-crown", json={"allow": False}).json()
+    assert (r["changed"], r["version"]) == (True, V21)
+    with session_scope() as s:
+        assert methodology.current_judgement(s).allow_unshaped_crown is False
+    assert len(started) == 2
+
+
+def test_the_switch_is_refused_where_no_judgement_block_exists(client):
+    r = client.post("/api/methodologies/unshaped-crown", json={"allow": True})
+    assert r.status_code == 400 and "no judgement block" in r.json()["detail"]
+    assert client.post("/api/methodologies/unshaped-crown", json={}).status_code == 400

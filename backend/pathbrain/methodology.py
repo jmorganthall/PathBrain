@@ -10,6 +10,7 @@ threshold, or metric change is published as a new version, never an edit.
 from __future__ import annotations
 
 import copy
+from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from functools import lru_cache
 import hashlib
@@ -1439,6 +1440,59 @@ def publish_sites(
                  "client_changes": client_changes}
 
 
+# The one judgement number Josh flips from the crown card: whether SQM off may hold the
+# crown. It changes who may crown, never how a run is graded, so its fork keeps the base's
+# scale (`scale_of`) and the re-grade copies scores instead of recomputing them.
+UNSHAPED_CROWN_SEGMENT = "sqm-off-may-crown"
+
+
+def _strip_unshaped_segment(version: str) -> str:
+    return "+".join(part for part in version.split("+") if part != UNSHAPED_CROWN_SEGMENT)
+
+
+def publish_unshaped_crown(session: Session, allow: bool) -> tuple[Methodology, Mapping[str, object]]:
+    """Publish the current methodology with ``allow_unshaped_crown`` set to ``allow``, as a
+    version of its own (``…+sqm-off-may-crown`` when allowed, the base when not), and point
+    the runtime at it, so the ring, the crown, Auto-apply and every view read one value and
+    the history shows when it changed. Only a version that states a judgement block can be
+    published this way. Returns ``(row, info)``; ``info["changed"]`` is False when the
+    current version already says ``allow``. Caller commits and kicks the re-grade."""
+    config = get_config(session)
+    base = ensure_current_methodology(session, config)
+    base_def = base.definition or {}
+    if "judgement" not in base_def:
+        raise ValueError(f"{base.version} states no judgement block, so who may crown is a setting, not this switch")
+    if bool(base_def["judgement"]["allow_unshaped_crown"]) == bool(allow):
+        return base, {"changed": False, "version": base.version, "allow_unshaped_crown": bool(allow)}
+    new_def = copy.deepcopy(base_def)
+    new_def["judgement"]["allow_unshaped_crown"] = bool(allow)
+    root = _strip_unshaped_segment(base.version)
+    new_version = f"{root}+{UNSHAPED_CROWN_SEGMENT}" if allow else root
+    notes = (
+        f"SQM off {'may' if allow else 'may not'} hold the crown, from {base.version}. It races "
+        "either way. Grading is unchanged, so scores carry over."
+    )
+    row = session.scalar(select(Methodology).where(Methodology.version == new_version))
+    if row is None:
+        row = Methodology(
+            version=new_version,
+            rubric_version=base.rubric_version,
+            derivation_version=base.derivation_version,
+            notes=notes,
+            definition=new_def,
+            is_current=True,
+        )
+        session.add(row)
+    else:  # flipped back: the version it was before
+        row.definition = new_def
+        row.is_current = True
+    for other in session.scalars(select(Methodology).where(Methodology.version != new_version)):
+        other.is_current = False
+    save_config(session, {"methodology_version": new_version})
+    log.info("Published %s (%s)", new_version, notes)
+    return row, {"changed": True, "version": new_version, "allow_unshaped_crown": bool(allow)}
+
+
 def _client_config(client: dict) -> dict:
     """A declared client block as browser-config keys (the config form of the same fields:
     a viewport of ``None`` is written as 0×0, which the plugin reads as "Playwright's default")."""
@@ -1522,10 +1576,12 @@ def crown_within_speed_budget(definition: dict | None) -> bool:
 def scale_of(version: str | None) -> str | None:
     """The version whose Overall scale ``version`` grades on: itself, or the registry version
     it declares ``same_scale_as`` (a read-only change such as v19 over v17). A fork
-    (``base+…``) changes what is graded, so it is always its own scale."""
+    (``base+…``) changes what is graded, so it is always its own scale, except the
+    ``+sqm-off-may-crown`` segment, which changes only who may hold the crown."""
     if version is None:
         return None
-    spec = METHODOLOGY_REGISTRY.get(str(version)) or {}
+    version = _strip_unshaped_segment(str(version))  # who may crown is not how runs grade
+    spec = METHODOLOGY_REGISTRY.get(version) or {}
     return str(spec.get("same_scale_as") or version)
 
 

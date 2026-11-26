@@ -572,6 +572,13 @@ export const api = {
       method: "POST",
       body: JSON.stringify(body),
     }),
+  // Whether SQM off may hold the crown: publishes the current methodology with that one
+  // judgement number changed, as a version on the same scale (scores carry over).
+  publishUnshapedCrown: (allow: boolean) =>
+    request<{ changed: boolean; version: string; allow_unshaped_crown: boolean; job_id: string | null }>(
+      "/methodologies/unshaped-crown",
+      { method: "POST", body: JSON.stringify({ allow }) },
+    ),
   crownFollowSync: () =>
     request<{ result: CrownCheckResult }>("/settings/crown-follow/sync", { method: "POST" }),
 

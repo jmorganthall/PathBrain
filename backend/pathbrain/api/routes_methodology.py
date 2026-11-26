@@ -8,6 +8,7 @@ ensure so the current methodology always appears, even on a fresh database).
 from __future__ import annotations
 
 import copy
+from collections.abc import Mapping
 
 from fastapi import APIRouter, Body, Depends, HTTPException
 from sqlalchemy import select
@@ -24,6 +25,7 @@ from ..methodology import (
     current_version,
     ensure_current_methodology,
     publish_sites,
+    publish_unshaped_crown,
     serialize,
     summarize,
 )
@@ -391,6 +393,26 @@ def publish_site_list(body: dict = Body(...), session: Session = Depends(get_ses
     if not regrade:
         return {**info, "job_id": None, "regrade_deferred": True}
 
+    job_id = jobs.start("regrade", f"Re-grade under {row.version}", _regrade_job, href="/methodology")
+    return {**info, "job_id": job_id}
+
+
+@router.post("/methodologies/unshaped-crown", status_code=202)
+def publish_unshaped_crown_route(body: dict = Body(...), session: Session = Depends(get_session)) -> Mapping[str, object]:
+    """Whether SQM off may hold the crown: the crown card's switch. Publishes the current
+    methodology with ``allow_unshaped_crown`` set, as a version of its own on the same scale
+    (`methodology.publish_unshaped_crown`), then the usual re-grade, which copies scores
+    because grading is unchanged. Body: ``{"allow": bool}``. 400 when the current version
+    states no judgement block."""
+    if not isinstance(body, dict) or not isinstance(body["allow"] if "allow" in body else None, bool):
+        raise HTTPException(status_code=400, detail='body must be {"allow": true|false}')
+    try:
+        row, info = publish_unshaped_crown(session, body["allow"])
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    session.commit()
+    if not info["changed"]:
+        return {**info, "job_id": None}
     job_id = jobs.start("regrade", f"Re-grade under {row.version}", _regrade_job, href="/methodology")
     return {**info, "job_id": job_id}
 
