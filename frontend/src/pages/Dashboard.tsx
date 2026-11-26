@@ -33,6 +33,7 @@ import { useQueuedAction } from "../hooks/useQueuedAction";
 import type {
   AxisSeriesResponse,
   CrownFollowStatus,
+  VerdictOut,
   CurrentTest,
   DuelStandings,
   JobsResponse,
@@ -149,6 +150,9 @@ export default function Dashboard() {
   const [field, setField] = useState<SettingsProfilesResponse | null>(null);
   const [standings, setStandings] = useState<DuelStandings | null>(null);
   const [follow, setFollow] = useState<CrownFollowStatus | null>(null);
+  // The crown, as the Verdict names it — the profile Auto-apply follows. Every crown mark on
+  // this page reads it; the pooled and head-to-head cards below are evidence beside it.
+  const [verdict, setVerdict] = useState<VerdictOut | null>(null);
   const [jobs, setJobs] = useState<{ data: JobsResponse; receivedAt: number } | null>(null);
   const [recentRuns, setRecentRuns] = useState<RunSummary[]>([]);
   const [runCount, setRunCount] = useState<number | null>(null);
@@ -198,6 +202,7 @@ export default function Dashboard() {
     api.settingsImpact().then((i) => setImpact(i)).catch(() => {});
     api.duelStandings().then((s) => setStandings(s)).catch(() => {});
     api.crownFollow().then((f) => setFollow(f)).catch(() => {});
+    api.verdict(1).then((v) => setVerdict(v)).catch(() => {});
   }, []);
 
   const loadAll = useCallback(async () => {
@@ -483,16 +488,20 @@ export default function Dashboard() {
   const followOn = follow?.config?.enabled ?? false;
   const followTone: Tone = !follow ? "idle" : followOn ? "good" : "idle";
   const followCaption = follow
-    ? `${followOn ? "applies the best profile for you" : "off — apply by hand"} · best changed ${follow.stats.changes_7d}× in 7d · current for ${fmtReign(
-        follow.stats.current_reign_hours
-      )}`
+    ? `${followOn ? "applies the best profile for you" : "off — apply by hand"} · crown changed ${follow.stats.changes_7d}× in 7d${
+        follow.stats.basis === "pooled" ? " (pooled ledger, until the Verdict has history)" : ""
+      } · current for ${fmtReign(follow.stats.current_reign_hours)}`
     : "status unavailable";
 
-  const crown = field?.best_fingerprint ? profiles.find((p) => p.fingerprint === field.best_fingerprint) ?? null : null;
+  const crownFp = verdict?.verdict.fingerprint ?? null;
+  const crown = crownFp ? profiles.find((p) => p.fingerprint === crownFp) ?? null : null;
   const liveFp = field?.current_fingerprint ?? null;
   const live = liveFp ? profiles.find((p) => p.fingerprint === liveFp) ?? null : null;
-  const liveIsCrown = liveFp != null && liveFp === field?.best_fingerprint;
-  const liveIsTied = liveFp != null && (field?.co_leaders ?? []).includes(liveFp);
+  const liveIsCrown = liveFp != null && liveFp === crownFp;
+  // The field's tie set is measured around the pooled #1, so "tied with the crown" only
+  // holds when the crown sits in that same group.
+  const tieGroup = new Set([field?.best_fingerprint, ...(field?.co_leaders ?? [])]);
+  const liveIsTied = liveFp != null && crownFp != null && tieGroup.has(liveFp) && tieGroup.has(crownFp);
   const rankedConfident = profiles
     .filter((p) => p.confident && p.overall != null)
     .sort((a, b) => (b.overall ?? 0) - (a.overall ?? 0));
@@ -1035,8 +1044,8 @@ export default function Dashboard() {
             <Card>
               <CardContent>
                 <CardTitle
-                  title="Standings · all measurements pooled"
-                  help="Confident profiles ranked by their Overall across every run they ever had — the pooled record. #1 here is the pooled best by definition. The live profile is kept in view even when it sits below the cut."
+                  title="Evidence · all measurements pooled"
+                  help="Confident profiles ranked by their Overall across every run they ever had — the pooled record. It is evidence, not the decision: the trophy marks the crown the Verdict names, which need not be #1 here. The live profile is kept in view even when it sits below the cut."
                   right={
                     <Button size="small" component={RouterLink} to="/settings" sx={{ flexShrink: 0 }}>
                       Standings
@@ -1046,7 +1055,7 @@ export default function Dashboard() {
                 {field ? (
                   <Leaderboard
                     profiles={profiles}
-                    bestFingerprint={field.best_fingerprint}
+                    crownFingerprint={crownFp}
                     currentFingerprint={field.current_fingerprint}
                     coLeaders={field.co_leaders ?? []}
                     minIterations={minIterations}
@@ -1059,7 +1068,7 @@ export default function Dashboard() {
             <Card>
               <CardContent>
                 <CardTitle
-                  title="Standings · head-to-head duels"
+                  title="Evidence · head-to-head duels"
                   help="The duel ladder's own verdict: the champion and the standings on fitted head-to-head strength. Profiles are measured back to back under the same conditions, so this can disagree with the pooled record — that is the point of running both."
                   right={
                     <Button size="small" component={RouterLink} to="/duels">

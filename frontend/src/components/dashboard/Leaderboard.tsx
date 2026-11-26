@@ -1,7 +1,7 @@
 // Top profiles by pooled Overall as thin horizontal bars — the "fastest profile by
 // Overall" glance. One hue for every bar (colour follows nothing here: the bar length IS
-// the ranking); the crown, the live profile and any statistical tie are marked with
-// icons and chips, never by repainting a bar.
+// the ranking); the crown (as the Verdict names it), the live profile and any statistical
+// tie are marked with icons and chips, never by repainting a bar.
 import { Link as RouterLink } from "react-router-dom";
 import Box from "@mui/material/Box";
 import Chip from "@mui/material/Chip";
@@ -17,7 +17,8 @@ import { fmtNum } from "../../utils/format";
 
 interface Props {
   profiles: SettingsProfile[];
-  bestFingerprint: string | null;
+  // The Verdict's crown. Not necessarily #1 here: this list is the pooled record, evidence.
+  crownFingerprint: string | null;
   currentFingerprint: string | null;
   coLeaders: string[];
   minIterations: number;
@@ -28,15 +29,14 @@ const BAR = "#6fd0dc";
 
 export default function Leaderboard({
   profiles,
-  bestFingerprint,
+  crownFingerprint,
   currentFingerprint,
   coLeaders,
   minIterations,
   limit = 6,
 }: Props) {
   const tied = new Set(coLeaders);
-  // Confident profiles only, best Overall first — the same population the crown is
-  // chosen from, so #1 here is the crown by construction.
+  // Confident profiles only, best pooled Overall first.
   const ranked = profiles
     .filter((p) => p.confident && p.overall != null)
     .sort((a, b) => (b.overall ?? 0) - (a.overall ?? 0));
@@ -63,7 +63,7 @@ export default function Leaderboard({
   return (
     <Stack spacing={1}>
       {shown.map((p, i) => {
-        const isCrown = p.fingerprint === bestFingerprint;
+        const isCrown = p.fingerprint === crownFingerprint;
         const isLive = p.fingerprint === currentFingerprint;
         const rank = rankOf(p.fingerprint);
         const gapRow = live != null && i === shown.length - 1;
@@ -78,7 +78,7 @@ export default function Leaderboard({
                 {rank}
               </Typography>
               {isCrown ? (
-                <Tooltip title="The pooled crown — highest Overall among confident profiles.">
+                <Tooltip title="The crown — the profile the Verdict names and Auto-apply follows.">
                   <EmojiEventsIcon sx={{ fontSize: 16, color: "warning.main", flexShrink: 0 }} />
                 </Tooltip>
               ) : (
@@ -109,7 +109,7 @@ export default function Leaderboard({
                 </Tooltip>
               )}
               {tied.has(p.fingerprint) && (
-                <Tooltip title="Statistically tied with the crown — its lead is inside run-to-run noise.">
+                <Tooltip title="Statistically tied with the pooled #1 — the gap is inside run-to-run noise.">
                   <Chip size="small" variant="outlined" label="tied" sx={{ height: 20 }} />
                 </Tooltip>
               )}
