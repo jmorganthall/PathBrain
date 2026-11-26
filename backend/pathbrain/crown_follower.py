@@ -53,8 +53,10 @@ from __future__ import annotations
 
 import threading
 import time
+from dataclasses import asdict
 from datetime import datetime, timedelta, timezone
 from statistics import mean, median
+from typing import Literal
 
 from sqlalchemy import select
 
@@ -69,6 +71,7 @@ from .methodology import (
     overall_weights,
     weighted_score,
 )
+from .domain.churn import Churn, ChurnEntry
 from .models import CrownEvent
 from .profile_test import _apply_all
 from .providers import get_provider
@@ -706,8 +709,13 @@ def _as_utc(dt: datetime) -> datetime:
 
 
 def stats(session, now: datetime | None = None) -> dict:
-    """Crown-churn statistics from the ``CrownEvent`` ledger — "how often does the best
-    profile change?".
+    """Crown-churn statistics — "how often does the crown change?".
+
+    Counted on **the Verdict** (the crown Auto-apply follows), from its history
+    (``verdict.history`` rows, one per changed answer), once that history exists. Until the
+    first Verdict is recorded it falls back to the pooled crown's ``CrownEvent`` ledger, and
+    ``basis`` says which was counted (``"verdict"`` or ``"pooled"``), so the number is never
+    passed off as the other.
 
     * ``total_changes`` / ``changes_24h`` / ``changes_7d`` / ``changes_30d`` — real crown
       changes (the first observation, ``previous_fingerprint=None``, is when tracking
@@ -722,23 +730,42 @@ def stats(session, now: datetime | None = None) -> dict:
     plus the backstop audit), so a flip that reverts entirely between two checks is
     invisible — this is a sampled statistic.
     """
+    from .models import VerdictRecord
+
     now = _as_utc(now or datetime.now(timezone.utc))
-    rows = session.scalars(
-        select(CrownEvent).where(CrownEvent.kind == "change").order_by(CrownEvent.id.asc())
-    ).all()
-    changes = [r for r in rows if r.previous_fingerprint is not None]
+    verdicts = session.scalars(select(VerdictRecord).order_by(VerdictRecord.id.asc())).all()
+    if verdicts:
+        entries = [ChurnEntry(_as_utc(v.decided_at), v.fingerprint, v.previous_fingerprint, None)
+                   for v in verdicts]
+        # A changed source or policy with the same crown is a new answer, not a new crown.
+        entries = [e for i, e in enumerate(entries)
+                   if i == 0 or e.fingerprint != entries[i - 1].fingerprint]
+        basis: Literal["verdict", "pooled"] = "verdict"
+    else:
+        rows = session.scalars(
+            select(CrownEvent).where(CrownEvent.kind == "change").order_by(CrownEvent.id.asc())
+        ).all()
+        entries = [ChurnEntry(_as_utc(r.created_at), r.fingerprint, r.previous_fingerprint, r.label)
+                   for r in rows]
+        basis = "pooled"
+    return asdict(_churn(entries, now, basis))
+
+
+def _churn(rows: list[ChurnEntry], now: datetime, basis: Literal["verdict", "pooled"]) -> Churn:
+    """The churn numbers over observed crowns, oldest first."""
+    changes = [r for r in rows if r.previous is not None]
 
     def _within(hours: float) -> int:
         cutoff = now - timedelta(hours=hours)
-        return sum(1 for r in changes if _as_utc(r.created_at) >= cutoff)
+        return sum(1 for r in changes if r.at >= cutoff)
 
-    tracked_since = _as_utc(rows[0].created_at) if rows else None
-    last_change_at = _as_utc(changes[-1].created_at) if changes else None
+    tracked_since = rows[0].at if rows else None
+    last_change_at = changes[-1].at if changes else None
     current_crown = rows[-1].fingerprint if rows else None
     current_label = rows[-1].label if rows else None
 
     # Completed reigns: gaps between consecutive ledger rows (first row = tracking start).
-    times = [_as_utc(r.created_at) for r in rows]
+    times = [r.at for r in rows]
     reigns = [
         (b - a).total_seconds() / 3600.0 for a, b in zip(times, times[1:]) if b > a
     ]
@@ -755,28 +782,27 @@ def stats(session, now: datetime | None = None) -> dict:
             per_day = round(changes_30d / window_days, 2)
 
     cutoff_30d = now - timedelta(days=30)
-    distinct_30d = len(
-        {r.fingerprint for r in changes if _as_utc(r.created_at) >= cutoff_30d}
-    )
+    distinct_30d = len({r.fingerprint for r in changes if r.at >= cutoff_30d})
 
     def _round(x: float | None) -> float | None:
         return round(x, 1) if x is not None else None
 
-    return {
-        "tracked_since": tracked_since.isoformat() if tracked_since else None,
-        "total_changes": len(changes),
-        "changes_24h": _within(24),
-        "changes_7d": _within(24 * 7),
-        "changes_30d": changes_30d,
-        "changes_per_day": per_day,
-        "distinct_crowns_30d": distinct_30d,
-        "last_change_at": last_change_at.isoformat() if last_change_at else None,
-        "current_crown_fingerprint": current_crown,
-        "current_crown_label": current_label,
-        "current_reign_hours": _round(current_reign_h),
-        "mean_reign_hours": _round(mean(reigns)) if reigns else None,
-        "median_reign_hours": _round(median(reigns)) if reigns else None,
-    }
+    return Churn(
+        basis=basis,
+        tracked_since=tracked_since.isoformat() if tracked_since else None,
+        total_changes=len(changes),
+        changes_24h=_within(24),
+        changes_7d=_within(24 * 7),
+        changes_30d=changes_30d,
+        changes_per_day=per_day,
+        distinct_crowns_30d=distinct_30d,
+        last_change_at=last_change_at.isoformat() if last_change_at else None,
+        current_crown_fingerprint=current_crown,
+        current_crown_label=current_label,
+        current_reign_hours=_round(current_reign_h),
+        mean_reign_hours=_round(mean(reigns)) if reigns else None,
+        median_reign_hours=_round(median(reigns)) if reigns else None,
+    )
 
 
 def current_crown(session) -> dict | None:
