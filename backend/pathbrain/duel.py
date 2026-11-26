@@ -736,15 +736,38 @@ def start(duration_minutes: int | None = None, *, trigger: str = "manual",
     return duel_id
 
 
-def _run_overall(run_id: int, methodology_version: str) -> float | None:
-    """The per-run Overall persisted at scoring time (None if unscored/incomparable)."""
-    with session_scope() as session:
+def _scale_versions(version: str) -> list[str]:
+    """``version`` first, then every registry version on the same scale (`same_scale`).
+
+    Two same-scale versions grade every run alike, so a run's Score under one *is* its Score
+    under the other. A same-scale publish mid-session (v19 over v17) keeps the ring running
+    (S2), and the legs that landed before the publish are scored under the old label until the
+    re-grade copies them: reading through the siblings is what lets those rounds count."""
+    from .methodology import METHODOLOGY_REGISTRY, scale_of
+
+    scale = scale_of(version)
+    return [version, *(v for v in METHODOLOGY_REGISTRY if v != version and scale_of(v) == scale)]
+
+
+def _run_score(session, run_id: int, methodology_version: str):
+    """The run's latest Score under ``methodology_version``, or under a same-scale sibling
+    when it has none under that label yet (`_scale_versions`)."""
+    for version in _scale_versions(methodology_version):
         score = session.scalars(
             select(Score).where(
-                Score.run_id == run_id, Score.methodology_version == methodology_version,
+                Score.run_id == run_id, Score.methodology_version == version,
                 latest_score(),
             ).order_by(Score.id.desc())
         ).first()
+        if score is not None:
+            return score
+    return None
+
+
+def _run_overall(run_id: int, methodology_version: str) -> float | None:
+    """The per-run Overall persisted at scoring time (None if unscored/incomparable)."""
+    with session_scope() as session:
+        score = _run_score(session, run_id, methodology_version)
         if score is None:
             return None
         val = (score.axis_scores or {}).get("overall")
@@ -776,12 +799,7 @@ def _run_crown(run_id: int, methodology_version: str) -> dict[str, float] | None
         keys = _crown_keys(session, methodology_version)
         if not keys:
             return None
-        score = session.scalars(
-            select(Score).where(
-                Score.run_id == run_id, Score.methodology_version == methodology_version,
-                latest_score(),
-            ).order_by(Score.id.desc())
-        ).first()
+        score = _run_score(session, run_id, methodology_version)
         if score is None:
             return None
         sub = score.subscores or {}
@@ -964,12 +982,7 @@ def _round_reading(
     if value is not None:
         return value, None
     with session_scope() as session:
-        score = session.scalars(
-            select(Score).where(
-                Score.run_id == run_id, Score.methodology_version == methodology_version,
-                latest_score(),
-            ).order_by(Score.id.desc())
-        ).first()
+        score = _run_score(session, run_id, methodology_version)
         if score is None:
             return None, f"not scored under {methodology_version}"
         if score.comparability == "incomparable":
@@ -3667,7 +3680,7 @@ def _run_ring(
     draining = False
     lead: _Leg | None = None
     legs_tape: list[dict] = []
-    counters = {"legs": 0, "iterations": 0, "cycles": 0, "reseeds": 0, "leg_failures": 0}
+    counters = {"legs": 0, "iterations": 0, "cycles": 0, "reseeds": 0, "rejudges": 0, "leg_failures": 0}
     # Legs whose profile could not be applied, back to back (cleared by any leg that could).
     apply_streak = FailureStreak(MAX_CONSECUTIVE_LEG_FAILURES)
     seat_kw = dict(p1=p1, alpha=alpha, min_margin=min_margin, min_pairs=min_pairs,
@@ -3987,6 +4000,25 @@ def _run_ring(
         counters["reseeds"] += 1
         _persist_open()
 
+    def _rejudge(new_version: str) -> None:
+        """A same-scale publish under a running ladder: change the label, keep the ring.
+
+        Every run grades alike under the two versions (`same_scale`), and so do the verdict
+        rules (the registry asserts the rubrics match), so the seated matches, the field and
+        the pairs already fought all stand. The weather stamper stays too: it reads the same
+        Overall either way. Rounds whose legs landed before the publish are read through the
+        old label (`_run_score`) until the re-grade copies them."""
+        nonlocal meth_version
+        old = meth_version
+        log.info("Duel %s: methodology changed %s → %s mid-session, same scale — the ring "
+                 "keeps its matches", duel_id, old, new_version)
+        _live(None, f"Methodology changed ({old} → {new_version}), same scale — matches carry on",
+              leg=None)
+        meth_version = new_version
+        _JUDGING.set(new_version)
+        counters["rejudges"] += 1
+        _persist_open()
+
     def _publish_explore() -> None:
         # The session's exploration books, on the row and on the board.
         nonlocal explore_board
@@ -4019,8 +4051,14 @@ def _run_ring(
         #    crown metric, a changed site list) mid-session re-seeds rather than strands.
         with session_scope() as session:
             now_version = _current_methodology_version(session)
-            reseeded = bool(now_version and now_version != meth_version)
-            if reseeded:
+            changed = bool(now_version and now_version != meth_version)
+            # A same-scale publish (v19 over v17) grades every run alike: the seated
+            # matches' rounds are on the new scale already, so the ring keeps fighting.
+            rejudged = changed and same_scale(now_version, meth_version)
+            reseeded = changed and not rejudged
+            if rejudged:
+                _rejudge(now_version)
+            elif reseeded:
                 _reseed(session, now_version)
         if reseeded:
             # The yardstick reads covariates through the version's re-graded scores, so
