@@ -21,6 +21,8 @@ from sqlalchemy import exists, select
 from sqlalchemy.orm import Session, aliased
 
 from . import metrics as metrics_mod
+from .domain import judgement as judgement_shape
+from .domain.judgement import Judgement, SpeedBudget
 from .config_store import get_config, save_config
 from .database import session_scope
 from .interpret import DERIVATION_VERSION
@@ -944,7 +946,7 @@ POOLED_READS = ("all", "epochs")
 RANKING_KEYS = ("pooled_read", "crown_within_speed_budget")
 #: The spec keys that change how a version's numbers are *read*, not what they are. Two
 #: versions that differ only here grade every run alike (`same_scale`).
-READ_ONLY_KEYS = ("ranking", "notes", "same_scale_as", "derivation_version")
+READ_ONLY_KEYS = ("ranking", "judgement", "notes", "same_scale_as", "derivation_version")
 
 
 # Invariant: a version that says it is on another's scale is that version's rubric exactly —
@@ -960,6 +962,57 @@ for _ver, _spec in METHODOLOGY_REGISTRY.items():
     assert _a == _b, f"methodology {_ver}: same_scale_as {_same}, but the rubrics differ"
     assert (_spec.get("ranking") or {}).get("pooled_read", "all") in POOLED_READS
     assert set(_spec.get("ranking") or {}) <= set(RANKING_KEYS), f"methodology {_ver}: unknown ranking key"
+
+
+def judgement_problems(block: object) -> list[str]:
+    """What is wrong with a methodology's ``judgement`` block, in words; empty when it is
+    whole. Every key must be stated (`judgement_shape.BLOCK_KEYS`): a block that leaves one
+    out would fall back to a setting, and a setting must not be able to move the crown."""
+    if not isinstance(block, dict):
+        return ["the judgement block is not a mapping"]
+    out: list[str] = []
+    missing = [k for k in judgement_shape.BLOCK_KEYS if k not in block]
+    unknown = sorted(set(block) - set(judgement_shape.BLOCK_KEYS))
+    if missing:
+        out.append(f"missing {', '.join(missing)}")
+    if unknown:
+        out.append(f"unknown {', '.join(unknown)}")
+    if missing or unknown:
+        return out
+    if block["crowned_by"] not in judgement_shape.CROWNED_BY:
+        out.append(f"crowned_by must be one of {judgement_shape.CROWNED_BY}")
+    if block["budget_judged_on"] not in judgement_shape.BUDGET_JUDGED_ON:
+        out.append(f"budget_judged_on must be one of {judgement_shape.BUDGET_JUDGED_ON}")
+    if block["ring_crown_rule"] not in ("rating", "lineal", "floor"):
+        out.append("ring_crown_rule must be rating, lineal or floor")
+    for key in ("ring_min_margin", "tie_sigma", "tie_min_margin"):
+        v = block[key]
+        if isinstance(v, bool) or not isinstance(v, (int, float)) or v < 0:
+            out.append(f"{key} must be a number of at least 0")
+    rounds = block["min_ring_rounds"]
+    if isinstance(rounds, bool) or not isinstance(rounds, int) or rounds < 1:
+        out.append("min_ring_rounds must be a whole number of at least 1")
+    if not isinstance(block["allow_unshaped_crown"], bool):
+        out.append("allow_unshaped_crown must be true or false")
+    budget = block["speed_budget"]
+    if not isinstance(budget, dict) or set(budget) != set(judgement_shape.SPEED_BUDGET_KEYS):
+        out.append(f"speed_budget must state exactly {', '.join(judgement_shape.SPEED_BUDGET_KEYS)}")
+    else:
+        if not isinstance(budget["enabled"], bool):
+            out.append("speed_budget.enabled must be true or false")
+        for key in ("lcp_pct", "fcp_pct"):
+            v = budget[key]
+            if isinstance(v, bool) or not isinstance(v, (int, float)) or not 0 <= v <= 200:
+                out.append(f"speed_budget.{key} must be a percentage from 0 to 200")
+    return out
+
+
+# Invariant: a version that states its judgement states all of it, and sensibly. Versions
+# before the judgement block state none and are read from the settings (`judgement`).
+for _ver, _spec in METHODOLOGY_REGISTRY.items():
+    if "judgement" in _spec:
+        _problems = judgement_problems(_spec["judgement"])
+        assert not _problems, f"methodology {_ver}: judgement block: {'; '.join(_problems)}"
 
 
 # Invariant: every Overall/crown metric a version *requires* must be a scored metric in
@@ -1436,6 +1489,71 @@ def same_scale(a: str | None, b: str | None) -> bool:
     if a is None or b is None:
         return a == b
     return scale_of(a) == scale_of(b)
+
+
+def judgement(version: str, definition: dict | None, config: dict | None) -> Judgement:
+    """Every number that decides the crown under ``version`` (`domain.judgement.Judgement`).
+
+    A version whose definition states a ``judgement`` block is read from that block alone
+    (``source == "methodology"``): no setting or constant can move its crown. A version that
+    states none (v20 and earlier) is read exactly as it always was, from the settings and
+    constants that held these numbers (``source == "settings"``), so reading through here
+    changes nothing for it. The one accessor; callers never read these numbers elsewhere."""
+    block = (definition or {})["judgement"] if "judgement" in (definition or {}) else None
+    if block is not None:
+        problems = judgement_problems(block)
+        if problems:
+            raise ValueError(f"methodology {version}: judgement block: {'; '.join(problems)}")
+        budget = block["speed_budget"]
+        return Judgement(
+            version=str(version),
+            source="methodology",
+            crowned_by=str(block["crowned_by"]),
+            ring_crown_rule=str(block["ring_crown_rule"]),
+            ring_min_margin=float(block["ring_min_margin"]),
+            tie_sigma=float(block["tie_sigma"]),
+            tie_min_margin=float(block["tie_min_margin"]),
+            min_ring_rounds=int(block["min_ring_rounds"]),
+            speed_budget=SpeedBudget(
+                enabled=bool(budget["enabled"]),
+                lcp_pct=float(budget["lcp_pct"]),
+                fcp_pct=float(budget["fcp_pct"]),
+            ),
+            budget_judged_on=str(block["budget_judged_on"]),
+            allow_unshaped_crown=bool(block["allow_unshaped_crown"]),
+        )
+    return _judgement_from_settings(str(version), config or {})
+
+
+def _judgement_from_settings(version: str, config: dict) -> Judgement:
+    """A version with no judgement block, read where each number has always lived. Each
+    line mirrors today's reader exactly, defaults included, so nothing moves."""
+    from .crowning import speed_budget  # lazy: both import this module
+    from .duel import crown_rule
+    from .overall_ranking import MIN_RING_ROUNDS_FOR_CROWN
+
+    corr = config["correlation"] if "correlation" in config and isinstance(config["correlation"], dict) else {}
+    ring = config["duel"] if "duel" in config and isinstance(config["duel"], dict) else {}
+    budget = speed_budget(config)
+    return Judgement(
+        version=version,
+        source="settings",
+        crowned_by="policy",
+        ring_crown_rule=crown_rule(ring),
+        ring_min_margin=float((ring["min_margin"] if "min_margin" in ring else 1.0) or 0.0),
+        tie_sigma=float((corr["crown_tie_sigma"] if "crown_tie_sigma" in corr else None) or 2.0),
+        tie_min_margin=float(
+            (corr["crown_tie_min_margin"] if "crown_tie_min_margin" in corr else None) or 0.0
+        ),
+        min_ring_rounds=MIN_RING_ROUNDS_FOR_CROWN,
+        speed_budget=SpeedBudget(
+            enabled=bool(budget["enabled"]),
+            lcp_pct=float(budget["lcp_pct"]),
+            fcp_pct=float(budget["fcp_pct"]),
+        ),
+        budget_judged_on="pooled",
+        allow_unshaped_crown=False,
+    )
 
 
 def required_metric_keys(definition: dict) -> list[str]:
