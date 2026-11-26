@@ -72,7 +72,8 @@ from . import decidability
 from .config_store import get_config
 from .logging_config import get_logger
 from .methodology import (
-    crown_within_speed_budget, ensure_current_methodology, overall_method, pooled_read, same_scale,
+    crown_within_speed_budget, current_judgement, ensure_current_methodology, judgement, overall_method,
+    pooled_read, same_scale,
 )
 from .settings_profile import SQM_OFF_FINGERPRINT
 
@@ -666,12 +667,16 @@ def ranking(
     cfg = get_config(session)
     corr = cfg.get("correlation") or {}
     min_iterations = int(corr.get("min_iterations") or 15)
-    tie_sigma = float(corr.get("crown_tie_sigma") or 2.0)
-    min_margin = float(corr.get("crown_tie_min_margin") or 0.0)
     duel_cfg = cfg.get("duel") or {}
 
     methodology = ensure_current_methodology(session, cfg)
     version = methodology.version
+    # Every number that decides the crown comes from the methodology's judgement (S14); a
+    # version with no judgement block reads the same settings and constants as before.
+    judged = judgement(version, methodology.definition or {}, cfg)
+    tie_sigma = judged.tie_sigma
+    min_margin = judged.tie_min_margin
+    min_ring_rounds = judged.min_ring_rounds
     method = overall_method(methodology.definition or {})
     published_read = pooled_read(methodology.definition or {})
     read_as = read if read in ("all", "epochs") else published_read
@@ -809,8 +814,8 @@ def ranking(
     # never confirmed (the review's S5). SQM off is excluded (the baseline test's
     # supervised job) but supplies the "vs no shaper" reading.
     for r in rows:
-        r["eligible"] = (not r["is_sqm_off"]) and r["anchored"] and (
-            r["confident"] or r["rounds"] >= MIN_RING_ROUNDS_FOR_CROWN
+        r["eligible"] = (judged.allow_unshaped_crown or not r["is_sqm_off"]) and r["anchored"] and (
+            r["confident"] or r["rounds"] >= min_ring_rounds
         )
     rows.sort(key=lambda r: (r["fused"], r["iterations"], r["rounds"]), reverse=True)
     if budget_as:
@@ -939,7 +944,7 @@ def ranking(
     if best is None:
         out["verdict"] = (
             f"No profile has reached {min_iterations} iterations on the pooled record or "
-            f"{MIN_RING_ROUNDS_FOR_CROWN} rounds in the ring yet, so there is nothing to crown."
+            f"{min_ring_rounds} rounds in the ring yet, so there is nothing to crown."
         )
         out["profiles"] = rows
         return out
@@ -1105,7 +1110,7 @@ def _keep_crown_within_budget(session, rows: list[dict]) -> dict:
     crown it leaves."""
     from .crowning import budget_checks, speed_budget
 
-    budget = speed_budget(get_config(session))
+    budget = speed_budget(get_config(session), current_judgement(session))
     reading = {**budget, "applied": False, "passed_over": [], "none_within": False}
     if not budget["enabled"]:
         return reading
@@ -1144,7 +1149,7 @@ def _budget_reading(session, fingerprint: str) -> dict | None:
         from .config_store import get_config
         from .crowning import budget_check, speed_budget
 
-        budget = speed_budget(get_config(session))
+        budget = speed_budget(get_config(session), current_judgement(session))
         if not budget["enabled"]:
             return {**budget, "checked": False}
         check = budget_check(session, fingerprint, budget)

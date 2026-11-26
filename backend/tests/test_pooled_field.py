@@ -586,3 +586,45 @@ def test_a_whole_record_methodology_keeps_the_whole_record_read():
     with session_scope() as s:
         fastest = pooled_field.fastest_legs(s, VERSION, 15)
     assert "by_era" not in fastest and fastest["lcp"]["fingerprint"] == _fp("fast_lcp")
+
+
+def test_the_referee_reads_every_crown_number_from_the_methodologys_judgement(monkeypatch):
+    """One chain, S14: under a version that states a judgement block, the tie bar and who
+    may hold the crown come from the block, whatever the settings say."""
+    from dataclasses import replace
+
+    from pathbrain import methodology
+
+    _add("judged-best", 88.0, iterations=40, runs=4, spread=1.0)
+    _add(SQM_OFF_FINGERPRINT, 95.0, iterations=40, runs=4, spread=1.0)
+
+    with session_scope() as s:
+        cfg = get_config(s)
+        row = ensure_current_methodology(s, cfg)
+        today = methodology.judgement(row.version, row.definition or {}, cfg)
+        assert today.source == "settings"
+        out = overall_ranking.ranking(s, backtest=False, live=False)
+    assert out["tie_sigma"] == today.tie_sigma
+    assert {r["fingerprint"]: r for r in out["profiles"]}[SQM_OFF_FINGERPRINT]["eligible"] is False
+
+    stated = replace(today, source="methodology", tie_sigma=7.0, allow_unshaped_crown=True)
+    monkeypatch.setattr(overall_ranking, "judgement", lambda *a, **k: stated)
+    with session_scope() as s:
+        out = overall_ranking.ranking(s, backtest=False, live=False)
+    assert out["tie_sigma"] == 7.0
+    assert {r["fingerprint"]: r for r in out["profiles"]}[SQM_OFF_FINGERPRINT]["eligible"] is True
+
+
+def test_the_speed_budget_is_the_methodologys_when_it_states_one():
+    from pathbrain import crowning
+    from pathbrain.domain.judgement import Judgement, SpeedBudget
+
+    stated = Judgement(
+        version="v21-test", source="methodology", crowned_by="ring", ring_crown_rule="lineal",
+        ring_min_margin=0.0, tie_sigma=2.0, tie_min_margin=0.5, min_ring_rounds=8,
+        speed_budget=SpeedBudget(enabled=True, lcp_pct=12.0, fcp_pct=15.0),
+        budget_judged_on="ring", allow_unshaped_crown=False,
+    )
+    cfg = {"crown_follow": {"speed_budget": {"enabled": False, "lcp_pct": 90.0, "fcp_pct": 90.0}}}
+    assert crowning.speed_budget(cfg, stated) == {"enabled": True, "lcp_pct": 12.0, "fcp_pct": 15.0}
+    assert crowning.speed_budget(cfg)["lcp_pct"] == 90.0

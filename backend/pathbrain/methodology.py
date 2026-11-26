@@ -1525,6 +1525,13 @@ def judgement(version: str, definition: dict | None, config: dict | None) -> Jud
     return _judgement_from_settings(str(version), config or {})
 
 
+def current_judgement(session: Session) -> Judgement:
+    """`judgement` under the current methodology, for a reader that has only a session."""
+    config = get_config(session)
+    row = ensure_current_methodology(session, config)
+    return judgement(row.version, row.definition or {}, config)
+
+
 def _judgement_from_settings(version: str, config: dict) -> Judgement:
     """A version with no judgement block, read where each number has always lived. Each
     line mirrors today's reader exactly, defaults included, so nothing moves."""

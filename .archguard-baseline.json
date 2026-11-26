@@ -9,6 +9,6 @@
   "untyped-json-column": 68,
   "nullable-without-meaning": 184,
   "runtime-ddl": 7,
-  "defensive-read": 3585,
+  "defensive-read": 3582,
   "untyped-frontend": 0
 }

@@ -18,6 +18,7 @@ policy — the policy only decides which verdict automation acts on.
 from __future__ import annotations
 
 from .config_store import get_config
+from .domain.judgement import Judgement
 from .logging_config import get_logger
 
 log = get_logger("crowning")
@@ -54,8 +55,13 @@ SPEED_BUDGET_RANGE = (0.0, 200.0)
 BUDGET_FALLBACK_ORDER = ("lcp_first", "fused", "fcp_first", "pooled", "duel", "math")
 
 
-def speed_budget(cfg: dict | None) -> dict:
-    """The configured budget, filled from the default and clamped."""
+def speed_budget(cfg: dict | None, judged: Judgement | None = None) -> dict:
+    """The speed budget: the methodology's (``judged``, `methodology.judgement`) when given,
+    else the configured one, filled from the default and clamped. For a version with no
+    judgement block the two are the same numbers (the judgement reads this setting)."""
+    if judged is not None:
+        b = judged.speed_budget
+        return {"enabled": b.enabled, "lcp_pct": b.lcp_pct, "fcp_pct": b.fcp_pct}
     raw = ((cfg or {}).get("crown_follow") or {}).get("speed_budget") or {}
     out = dict(DEFAULT_SPEED_BUDGET)
     if isinstance(raw, dict):
@@ -132,7 +138,9 @@ def resolve(session, pooled_best_fp: str | None) -> dict:
     on the result records the check either way."""
     policy = active_policy(session)
     chosen = _resolve_policy(session, pooled_best_fp, policy)
-    budget = speed_budget(get_config(session))
+    from .methodology import current_judgement  # lazy: methodology imports this module
+
+    budget = speed_budget(get_config(session), current_judgement(session))
     if not budget["enabled"] or not chosen.get("fingerprint"):
         chosen["speed_budget"] = {**budget, "checked": False}
         return chosen
