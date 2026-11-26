@@ -240,6 +240,95 @@ def test_a_publish_mid_session_reseeds_the_ring_instead_of_stranding_it(monkeypa
             s.query(Duel).delete()
 
 
+def _same_scale_sibling(version: str) -> str:
+    import pytest
+
+    from pathbrain.methodology import METHODOLOGY_REGISTRY, same_scale
+
+    sib = next((v for v in METHODOLOGY_REGISTRY if v != version and same_scale(v, version)), None)
+    if sib is None:
+        pytest.skip(f"no registry version shares {version}'s scale")
+    return sib
+
+
+def test_a_same_scale_publish_mid_session_keeps_the_seated_matches(monkeypatch):
+    """A same-scale publish (v19 over v17: only how the ranking reads changes) grades every
+    run alike, so a seated match's rounds are already on the new scale. The ring used to
+    treat it like any publish: close every seated match as an aborted draw and rebuild the
+    field, throwing away the night's evidence. Now the match carries on to its verdict, the
+    field is not rebuilt, and the verdict is recorded under the new version."""
+    import pathbrain.api.routes_settings as rs
+
+    with session_scope() as s:
+        s.query(Duel).delete()
+    applied: list[str] = []
+    real = _current_version()
+    new = _same_scale_sibling(real)
+    field = {"best_fingerprint": "ssinc000000x",
+             "profiles": [_profile("ssinc000000x", 1514), _profile("sscha000000x", 300)]}
+    state = {"checks": 0}
+
+    def fake_version(session):
+        state["checks"] += 1
+        return new if state["checks"] > 2 else real
+
+    def fake_profiles(session, **_):
+
+        return dict(field)
+
+    monkeypatch.setattr(duel_mod, "_current_methodology_version", fake_version)
+    monkeypatch.setattr(rs, "compute_profiles", fake_profiles)
+    monkeypatch.setattr(rs, "_compute_heirs", lambda result, session, live=None: {
+        "items": [{"fingerprint": "sscha000000x"}]})
+    monkeypatch.setattr(challenger_mod, "_apply_profile", lambda p, s, fp: applied.append(fp))
+    _no_settle()
+    _score_by_profile(monkeypatch, applied, {"ssinc000000x": 60.0, "sscha000000x": 66.0})
+    try:
+        d = _wait_finish(duel_mod.start(duration_minutes=10))
+        assert d.status == DuelStatus.COMPLETE, d.error
+        assert state["checks"] > 2, "the publish never landed mid-session"
+        assert not any("methodology changed" in m["reason"] for m in d.matchups), d.matchups
+        decided = [m for m in d.matchups if m["challenger"] == "sscha000000x"]
+        assert decided and decided[0]["verdict"] == "challenger"
+        assert decided[0]["methodology"] == new and decided[0]["pairs"] >= 3
+        assert d.judged_under == new
+    finally:
+        with session_scope() as s:
+            s.query(Duel).delete()
+
+
+def test_a_leg_scored_under_the_old_label_reads_under_a_same_scale_version():
+    """Legs that landed before a same-scale publish are scored under the old label until the
+    re-grade copies them. The ring reads them through the sibling so those rounds count, and
+    still prefers the exact label once it exists. A different scale never borrows."""
+    real = _current_version()
+    sib = _same_scale_sibling(real)
+    when = datetime.now(timezone.utc).replace(tzinfo=None)
+    with session_scope() as s:
+        a = Run(status=RunStatus.COMPLETE, created_at=when, settings_fingerprint="ssread00000a",
+                settings=_settings(300), iterations=1, per_iteration_ms=1000.0)
+        b = Run(status=RunStatus.COMPLETE, created_at=when, settings_fingerprint="ssread00000b",
+                settings=_settings(300), iterations=1, per_iteration_ms=1000.0)
+        s.add_all([a, b])
+        s.flush()
+        ids = [a.id, b.id]
+        s.add(Score(run_id=a.id, methodology_version=real, comparability="exact",
+                    axis_scores={"overall": 61.5}))
+        s.add(Score(run_id=b.id, methodology_version=real, comparability="exact",
+                    axis_scores={"overall": 40.0}))
+        s.add(Score(run_id=b.id, methodology_version=sib, comparability="exact",
+                    axis_scores={"overall": 42.0}))
+    try:
+        assert duel_mod._run_overall(ids[0], sib) == 61.5
+        assert duel_mod._round_reading(ids[0], sib, True) == (61.5, None)
+        assert duel_mod._run_overall(ids[1], sib) == 42.0  # the exact label wins
+        assert duel_mod._run_overall(ids[0], "test-other-scale-v0") is None
+    finally:
+        with session_scope() as s:
+            s.execute(delete(Score).where(Score.run_id.in_(ids)))
+            s.execute(delete(Run).where(Run.id.in_(ids)))
+
+
 def test_a_carried_match_from_another_methodology_is_closed_not_resumed(monkeypatch):
     """An open match's margins are Overalls on ONE rubric's scale. One carried over from a
     session under another version cannot take a round under this one: it is closed with
