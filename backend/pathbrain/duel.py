@@ -5171,6 +5171,17 @@ def fight_card(session, limit: int = 12, contenders: str | None = None,
 # ── Ledger accessors ─────────────────────────────────────────────────────────────────
 
 
+def ring_order(session) -> list[str]:
+    """Every profile the ring has rated, best first, on the standings' own order
+    (`_rank_key` at `rank_sigma`): who comes next when the champion may not hold the crown
+    (`crowning` under a ring-crowning methodology). Read-only."""
+    sessions_data = _ledger_sessions(session)
+    ratings = fit_bradley_terry(_pair_record(sessions_data))
+    sigma = rank_sigma(_duel_config(session))
+    keyed = [(k, fp) for fp, r in ratings.items() if (k := _rank_key(r, sigma)) is not None]
+    return [fp for _k, fp in sorted(keyed, key=lambda kf: kf[0], reverse=True)]
+
+
 def latest_champion(session, max_age_days: int) -> dict | None:
     """The winner the ring names over the whole ledger — the reigning duel champion — if
     fresh enough.
